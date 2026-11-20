@@ -10,7 +10,7 @@ Guide court pour la session de chaque app. **Le socle ne modifie aucune app** : 
 
 ```toml
 # Cargo.toml de l'app
-socle = { git = "https://github.com/Desarrh/socle", tag = "v0.1.1", default-features = false, features = ["ui", "settings", "crash", "instance"] }
+socle = { git = "https://github.com/Desarrh/socle", tag = "v0.1.2", default-features = false, features = ["ui", "settings", "crash", "instance"] }
 ```
 
 Pour développer le socle et une app en même temps, sans toucher au `Cargo.toml` ni à la CI, chaque app ajoute un fichier **non versionné** `.cargo/config.toml` (à mettre dans `.gitignore`) :
@@ -28,7 +28,7 @@ Alternatives écartées :
 - **crates.io** : publication publique et versions immuables, c'est lourd pour une crate interne.
 - **Dépôt privé** : la CI des dépôts publics n'y aurait pas accès sans jeton.
 
-Fait le 20/11 : dépôt public https://github.com/Desarrh/socle (MIT), tags `v0.1.0` puis `v0.1.1` (mode test). Chaque nouvelle version = un nouveau tag ; une app ne change de version qu'en modifiant son `tag = "…"`.
+Fait le 20/11 : dépôt public https://github.com/Desarrh/socle (MIT), tags `v0.1.0`, `v0.1.1` (mode test) puis `v0.1.2` (mode test corrigé : invisible à l'écran au lieu de hors écran). Chaque nouvelle version = un nouveau tag ; une app ne change de version qu'en modifiant son `tag = "…"`.
 
 ## 1. Explorateur
 
@@ -104,8 +104,10 @@ Pendant les tests, l'utilisateur doit pouvoir se servir de son PC comme si de ri
 | Besoin | Outil |
 |---|---|
 | savoir si on est en test | `testmode::enabled()` : `--test-hors-ecran` ou `SOCLE_TEST=1` |
-| fenêtre qui ne dérange pas | créer la fenêtre avec `with_active(false)` et `with_position(PhysicalPosition::new(-32000, -32000))`, puis `testmode::hide(hwnd)` juste après la création : hors écran, `WS_EX_NOACTIVATE`, hors de la barre des tâches. Le focus de l'utilisateur ne bouge pas (vérifié en test) |
-| capture d'écran de l'app | `testmode::capture(hwnd)` → `(largeur, hauteur, RGBA)` par `PrintWindow`, sans toucher à l'écran. La fenêtre doit être affichée (hors écran suffit) |
+| fenêtre qui ne dérange pas | créer la fenêtre **invisible et sans focus** (`with_visible(false)`, `with_active(false)`), puis `testmode::hide(hwnd)` juste après la création. La fenêtre reste à l'écran mais à opacité 0, traversée par la souris, sans activation, hors de la barre des tâches et tout au fond de la pile. Elle continue à se dessiner normalement, et le focus de l'utilisateur ne bouge pas (vérifié) |
+| **ne pas** placer la fenêtre hors écran | depuis la v0.1.2. À (-32000, -32000), Windows ne demande plus de dessin : l'app se fige et la capture sort blanche (constaté par Tube, confirmé par `examples/testmode_check.rs` : 85 % de blanc hors écran, 0 % avec `hide`). `hide_offscreen` est gardée pour comparer, mais elle est dépréciée |
+| capture d'écran de l'app | `testmode::capture(hwnd)` → `(largeur, hauteur, RGBA)` par `PrintWindow`, interface et vidéo comprises, sans toucher à l'écran |
+| focus inchangé | `testmode::foreground()` avant et après le test |
 | capture de l'interface seule | préférer le rendu **sans fenêtre** : egui + rendu CPU dans un tampon, puis PNG. Voir `capture()` dans `examples/demo.rs` (`--capture <dossier>`) |
 | ne pas ralentir le PC | `testmode::low_priority()` au début d'un test ; lancer les compilations en priorité basse (`start /low cargo …` ou `Start-Process -Priority BelowNormal`) |
 | instance unique pendant un test | utiliser un nom d'app de test (`socle::instance::start("MonAppTest123", …)`) pour ne jamais écrire dans l'instance ouverte de l'utilisateur |

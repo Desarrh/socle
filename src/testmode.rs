@@ -2,22 +2,22 @@
 //! servir de son PC comme si de rien n'était. Ce module donne aux apps les briques communes :
 //!
 //! - [`enabled`] : mode test demandé par `--test-hors-ecran` ou la variable `SOCLE_TEST=1` ;
-//! - [`hide`] : fenêtre déplacée hors écran, **sans activation** (`WS_EX_NOACTIVATE`), hors de la
-//!   barre des tâches (`WS_EX_TOOLWINDOW`) ; elle ne prend jamais le focus ;
-//! - [`capture`] : capture de la fenêtre par `PrintWindow` (`PW_RENDERFULLCONTENT`), qui marche
-//!   hors écran, sans toucher à l'écran ni au presse-papiers ;
+//! - [`hide`] : fenêtre à l'écran mais **invisible** (opacité 0), traversée par la souris,
+//!   sans activation, hors de la barre des tâches, tout au fond de la pile ; elle continue à se
+//!   dessiner normalement ;
+//! - [`capture`] : capture de la fenêtre par `PrintWindow` (`PW_RENDERFULLCONTENT`), même
+//!   invisible, sans toucher à l'écran ni au presse-papiers ;
+//! - [`foreground`] : pour vérifier qu'un test n'a pas pris le focus ;
 //! - [`low_priority`] : processus en priorité basse (tests, compilations lancées par une app).
 //!
 //! Aucune entrée simulée n'est fournie, volontairement.
 //!
-//! `PrintWindow` ne capture qu'une fenêtre **affichée** : en mode test, la fenêtre est donc
-//! affichée, mais hors écran, sans activation et hors de la barre des tâches. Avec winit :
+//! Pourquoi pas hors écran (v0.1.1) : Windows ne demande plus de dessin à une fenêtre placée à
+//! (-32000, -32000) ; avec winit/egui l'app se fige et `PrintWindow` rend du blanc.
+//! Avec winit, créer la fenêtre **invisible et sans focus**, puis appeler `hide` (qui l'affiche) :
 //! ```ignore
 //! let test = socle::testmode::enabled();
-//! let mut attrs = Window::default_attributes().with_active(!test);
-//! if test {
-//!     attrs = attrs.with_position(winit::dpi::PhysicalPosition::new(-32000, -32000));
-//! }
+//! let attrs = Window::default_attributes().with_active(!test).with_visible(!test);
 //! // … juste après la création : if test { socle::testmode::hide(hwnd) }
 //! ```
 //! Pour une simple capture d'interface, le rendu **sans fenêtre** reste préférable (voir le mode
@@ -30,7 +30,8 @@ use windows_sys::Win32::Graphics::Gdi::{
 use windows_sys::Win32::Storage::Xps::{PRINT_WINDOW_FLAGS, PrintWindow};
 use windows_sys::Win32::System::Threading::{BELOW_NORMAL_PRIORITY_CLASS, GetCurrentProcess, SetPriorityClass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GWL_EXSTYLE, GetWindowLongPtrW, GetWindowRect, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    GWL_EXSTYLE, GetForegroundWindow, GetWindowLongPtrW, GetWindowRect, HWND_BOTTOM, LWA_ALPHA, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPos, ShowWindow, WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
 };
 
 /// Drapeau de ligne de commande du mode test.
@@ -41,19 +42,45 @@ pub fn enabled() -> bool {
     std::env::args().any(|a| a == FLAG) || std::env::var("SOCLE_TEST").is_ok_and(|v| v == "1")
 }
 
-/// Position hors écran utilisée par `hide` (loin de tous les moniteurs).
+/// Position hors écran utilisée par [`hide_offscreen`].
 pub const OFFSCREEN: (i32, i32) = (-32000, -32000);
 
-/// Déplace la fenêtre hors écran, l'empêche de prendre le focus et la retire de la barre des
-/// tâches. `hwnd` : handle Win32 (winit : `RawWindowHandle::Win32(h) => h.hwnd.get()`).
+/// Rend la fenêtre **invisible sans la sortir de l'écran**, et l'affiche sans activation :
+/// opacité 0 (`WS_EX_LAYERED`), la souris la traverse (`WS_EX_TRANSPARENT`), jamais de focus
+/// (`WS_EX_NOACTIVATE`), hors de la barre des tâches (`WS_EX_TOOLWINDOW`), tout au fond de la
+/// pile (`HWND_BOTTOM`). Windows continue à lui demander de se dessiner, donc l'app tourne
+/// normalement et [`capture`] voit l'interface (méthode de Tube, vérifiée dans le socle).
+/// `hwnd` : handle Win32 (winit : `RawWindowHandle::Win32(h) => h.hwnd.get()`).
 pub fn hide(hwnd: isize) {
+    let h = hwnd as HWND;
+    unsafe {
+        let ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
+        let ex = (ex | (WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW) as isize) & !(WS_EX_APPWINDOW as isize);
+        SetWindowLongPtrW(h, GWL_EXSTYLE, ex);
+        SetLayeredWindowAttributes(h, 0, 0, LWA_ALPHA);
+        SetWindowPos(h, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOSIZE | SWP_NOMOVE);
+        ShowWindow(h, SW_SHOWNOACTIVATE);
+    }
+}
+
+/// Ancienne méthode (v0.1.1) : fenêtre déplacée hors écran. **Déconseillée** : Windows ne
+/// demande plus de dessin à une fenêtre hors écran, l'app se fige et les captures sortent
+/// blanches (constaté par Tube, confirmé par `examples/testmode_check.rs`). Gardée pour comparer.
+#[deprecated(note = "utiliser `hide` : une fenêtre hors écran n'est plus redessinée")]
+pub fn hide_offscreen(hwnd: isize) {
     let h = hwnd as HWND;
     unsafe {
         let ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
         let ex = (ex | (WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW) as isize) & !(WS_EX_APPWINDOW as isize);
         SetWindowLongPtrW(h, GWL_EXSTYLE, ex);
         SetWindowPos(h, std::ptr::null_mut(), OFFSCREEN.0, OFFSCREEN.1, 0, 0, SWP_NOACTIVATE | SWP_NOSIZE | SWP_NOZORDER);
+        ShowWindow(h, SW_SHOWNOACTIVATE);
     }
+}
+
+/// Fenêtre au premier plan (pour vérifier dans un test que le focus de l'utilisateur n'a pas bougé).
+pub fn foreground() -> isize {
+    unsafe { GetForegroundWindow() as isize }
 }
 
 /// Capture le contenu de la fenêtre (même hors écran ou cachée derrière d'autres) en RGBA.
@@ -116,23 +143,22 @@ pub fn low_priority() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow, GetForegroundWindow, SW_SHOWNOACTIVATE, ShowWindow, WS_POPUP};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow, WS_POPUP};
 
-    /// Fenêtre de test hors écran (-32000), sans activation, hors de la barre des tâches :
+    /// Fenêtre de test invisible (opacité 0), sans activation, hors de la barre des tâches :
     /// rien n'apparaît à l'écran et le focus de l'utilisateur ne bouge pas.
     #[test]
     fn fenetre_cachee_et_capture() {
         let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
         let h = unsafe {
-            CreateWindowExW(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW, class.as_ptr(), std::ptr::null(), WS_POPUP, OFFSCREEN.0, OFFSCREEN.1, 120, 80, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null())
+            CreateWindowExW(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW, class.as_ptr(), std::ptr::null(), WS_POPUP, 100, 100, 120, 80, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null())
         };
         assert!(!h.is_null());
+        let focus = foreground();
         hide(h as isize);
-        let focus = unsafe { GetForegroundWindow() };
-        unsafe { ShowWindow(h, SW_SHOWNOACTIVATE) };
-        assert_eq!(unsafe { GetForegroundWindow() }, focus, "le focus n'a pas bougé");
+        assert_eq!(foreground(), focus, "le focus n'a pas bougé");
         let ex = unsafe { GetWindowLongPtrW(h, GWL_EXSTYLE) };
-        assert!(ex & WS_EX_NOACTIVATE as isize != 0);
+        assert!(ex & WS_EX_NOACTIVATE as isize != 0 && ex & WS_EX_LAYERED as isize != 0 && ex & WS_EX_TRANSPARENT as isize != 0);
         let shot = capture(h as isize);
         unsafe { DestroyWindow(h) };
         let (w, ht, px) = shot.expect("capture PrintWindow");

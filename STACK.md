@@ -1,6 +1,6 @@
 # Socle — stack technique (document de référence)
 
-Bibliothèque commune aux applis egui (`explorateur`, `lecteur-universel`, `vigie`, `tube`). Version 0.1.1. Dépôt public : https://github.com/Desarrh/socle. Pas encore utilisée par les apps : voir [MIGRATION.md](MIGRATION.md).
+Bibliothèque commune aux applis egui (`explorateur`, `lecteur-universel`, `vigie`, `tube`). Version 0.1.2. Dépôt public : https://github.com/Desarrh/socle. Pas encore utilisée par les apps : voir [MIGRATION.md](MIGRATION.md).
 
 ## 1. But et direction
 
@@ -38,7 +38,7 @@ Bibliothèque commune aux applis egui (`explorateur`, `lecteur-universel`, `vigi
 | `crash` | `crash.log` | — |
 | `instance` | instance unique | windows-sys |
 | `update` | GitHub Releases | serde_json, zip |
-| `testmode` | mode test (règle n° 0) : fenêtre hors écran sans focus, capture PrintWindow, priorité basse | windows-sys |
+| `testmode` | mode test (règle n° 0) : fenêtre invisible à l'écran (opacité 0) sans focus, capture PrintWindow, priorité basse | windows-sys |
 | `full` | tout (démo, tests) | |
 
 **Taille ajoutée par feature** (mesurée par `sh scripts/taille.sh` : exe témoin qui imite une app, egui + `image` png/jpeg/gif/webp/bmp/ico = 4 602 Ko, même profil release que les apps) :
@@ -81,7 +81,8 @@ Bibliothèque commune aux applis egui (`explorateur`, `lecteur-universel`, `vigi
 | `src/images/psd.rs` | image composite PSD/PSB (RLE ou brut, 8/16/32 bits, RVB/gris/CMJN/indexé) |
 | `src/images/raw.rs` | JPEG d'aperçu des RAW |
 | `src/images/svg.rs`, `wic.rs` | resvg ; WIC (complet + réduit au décodage) |
-| `src/testmode.rs` | `enabled`, `hide`, `capture`, `low_priority` |
+| `src/testmode.rs` | `enabled`, `hide`, `capture`, `foreground`, `low_priority` |
+| `examples/testmode_check.rs` | vraie fenêtre winit + egui en mode test : compte les images dessinées, capture, vérifie le focus |
 | `src/paths.rs` | `config_dir`, `cache_dir`, `write_atomic` |
 | `src/settings.rs`, `crash.rs`, `instance.rs`, `update.rs` | utilitaires |
 | `examples/demo.rs` | démo complète (boucle winit + rendu CPU des apps, mode `--capture`) |
@@ -110,8 +111,8 @@ Le socle **porte** la DA commune (DIRECTION.md §3) : la table des couleurs est 
 - Mise à jour : drapeau de relance unifié `--apres-maj` (l'ancien `--after-update` est reconnu), ancien exe `.exe.old` (et `.old`) supprimé au démarrage.
 - Raccourcis fournis : Ctrl+K (palette), F1 (aide), Tab (compléter), ↑↓ / Entrée / Échap.
 - **AZERTY** : egui-winit 0.37 transmet la touche logique (Ctrl+3 arrive comme `Key::Quote`). Lire les raccourcis avec `socle::keys` (`consume`, `pressed`, `consume_ctrl_digit`) : la rangée des chiffres passe par la touche physique, et Ctrl+chiffre redevient utilisable.
-- Git : auteur `Desarrh`, sans mention de Claude. Dépôt public https://github.com/Desarrh/socle, versions par tag (`v0.1.0`).
-- **Tests (règle n° 0)** : jamais de fenêtre visible, de focus pris, d'entrée simulée ni d'écriture dans les apps ou réglages de l'utilisateur. Captures hors écran (`--capture`), tube d'instance au nom de test, fichiers dans `%TEMP%`. Le test de `testmode` affiche une fenêtre à (-32000, -32000) sans activation et vérifie que le focus ne bouge pas.
+- Git : auteur `Desarrh`, sans mention de Claude. Dépôt public https://github.com/Desarrh/socle, versions par tag (`v0.1.0` → `v0.1.2`).
+- **Tests (règle n° 0)** : jamais de fenêtre visible, de focus pris, d'entrée simulée ni d'écriture dans les apps ou réglages de l'utilisateur. Captures hors écran (`--capture`), tube d'instance au nom de test, fichiers dans `%TEMP%`. Le test de `testmode` affiche une fenêtre à opacité 0, sans activation, et vérifie que le focus ne bouge pas. `examples/testmode_check.rs` montre qu'une fenêtre hors écran ne marche pas (capture blanche) et qu'une fenêtre invisible à l'écran marche.
 
 ## 6. Fonctionnalités (ce qui marche aujourd'hui)
 

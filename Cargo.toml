@@ -1,6 +1,6 @@
 [package]
 name = "socle"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 description = "Socle commun des applis egui de Desarrh : thème, icônes, composants, recherche floue, palette Ctrl+K, images, utilitaires"
 license = "MIT"
@@ -25,7 +25,7 @@ img-wic = ["images", "dep:windows"]                  # Windows (WIC) : HEIC, AVI
 # --- utilitaires ---
 settings = ["dep:serde", "dep:serde_json"]           # %APPDATA%\<App>\settings.json, écriture atomique
 crash = []                                           # crash.log + signalement au lancement suivant
-testmode = ["dep:windows-sys", "windows-sys/Win32_Graphics_Gdi", "windows-sys/Win32_Storage_Xps"]  # règle n° 0 : fenêtre hors écran, sans focus, capture PrintWindow
+testmode = ["dep:windows-sys", "windows-sys/Win32_Graphics_Gdi", "windows-sys/Win32_Storage_Xps"]  # règle n° 0 : fenêtre invisible (opacité 0), sans focus, capture PrintWindow
 instance = ["dep:windows-sys"]                       # instance unique (mutex + tube nommé)
 update = ["dep:serde_json", "dep:zip"]               # mise à jour GitHub Releases (curl.exe)
 # tout, pour la démo et les tests
@@ -56,6 +56,10 @@ bytemuck = "1"
 [[example]]
 name = "demo"
 required-features = ["ui", "images"]
+
+[[example]]
+name = "testmode_check"
+required-features = ["testmode", "theme"]
 
 [[example]]
 name = "taille"
