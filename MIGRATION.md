@@ -10,7 +10,7 @@ Guide court pour la session de chaque app. **Le socle ne modifie aucune app** : 
 
 ```toml
 # Cargo.toml de l'app
-socle = { git = "https://github.com/Desarrh/socle", tag = "v0.1.2", default-features = false, features = ["ui", "settings", "crash", "instance"] }
+socle = { git = "https://github.com/Desarrh/socle", tag = "v0.1.3", default-features = false, features = ["ui", "settings", "crash", "instance"] }
 ```
 
 Pour développer le socle et une app en même temps, sans toucher au `Cargo.toml` ni à la CI, chaque app ajoute un fichier **non versionné** `.cargo/config.toml` (à mettre dans `.gitignore`) :
@@ -28,7 +28,16 @@ Alternatives écartées :
 - **crates.io** : publication publique et versions immuables, c'est lourd pour une crate interne.
 - **Dépôt privé** : la CI des dépôts publics n'y aurait pas accès sans jeton.
 
-Fait le 20/11 : dépôt public https://github.com/Desarrh/socle (MIT), tags `v0.1.0`, `v0.1.1` (mode test) puis `v0.1.2` (mode test corrigé : invisible à l'écran au lieu de hors écran). Chaque nouvelle version = un nouveau tag ; une app ne change de version qu'en modifiant son `tag = "…"`.
+Fait le 20/11 : dépôt public https://github.com/Desarrh/socle (MIT), tags `v0.1.0`, `v0.1.1` (mode test), `v0.1.2` (mode test corrigé : invisible à l'écran au lieu de hors écran) ; `v0.1.3` préparée (polices facultatives, `Palette::open_with`). Chaque nouvelle version = un nouveau tag ; une app ne change de version qu'en modifiant son `tag = "…"`.
+
+## Polices (toutes les apps, v0.1.3)
+
+`socle::theme::install_fonts(ctx)` charge Segoe UI, Consolas et Segoe UI Symbol (+4,1 Mo de RAM), **sans gras ni emoji**. Pour plus, `install_fonts_with(ctx, FontOptions { bold: true, emoji: false, symbols: true })` :
+
+- `bold` (+1,0 Mo) : vrai Segoe UI Bold pour `theme::bold()`. Sans lui, la famille `bold` existe toujours, mais en poids normal, et rien ne casse.
+- `emoji` (+12,1 Mo) : seulement si l'app affiche des emoji qu'elle ne contrôle pas (titres, noms de fichiers). Sans lui, un emoji s'affiche comme un carré vide.
+
+Conseil : explorateur et Vigie en défaut, lecteur avec `bold` (titres Word), Tube avec `bold`. Pour Tube, `emoji` seulement si les titres YouTube avec emoji sont jugés importants (12 Mo).
 
 ## 1. Explorateur
 
@@ -36,7 +45,7 @@ Features : `["ui", "images", "img-svg", "img-wic", "settings", "crash", "instanc
 
 | Avant | Après |
 |---|---|
-| `src/theme.rs` | supprimer ; `use socle::theme` (identique, plus la famille `bold` et la police emoji) |
+| `src/theme.rs` | supprimer ; `use socle::theme` (identique ; `install_fonts` charge les mêmes polices qu'avant) |
 | emoji de `fsx::icon_for` (📁 📄 🖼 📝 🎵 🎞 📦 ⚙ 📕) | `Icon::for_extension(&e.ext)` (et `Icon::Folder` pour un dossier) + `icons::paint(painter, rect, icon, couleur)` |
 | barre d'outils ← → ↑ ⟳ 🔍 ⤵ ▦ ☰ ☀ 🌙 ⋯ ⎇ 📌 🖴 ▲▼ | `Icon::ArrowLeft/ArrowRight/ArrowUp/Refresh/Search/SearchDeep/Grid/ListView/Sun/Moon/More/Git/Pin/Drive/ChevronUp/ChevronDown` avec `icons::button(ui, icon, 32.0, Look::tool(&pal), "infobulle")` |
 | Ctrl+1/2 impossibles en AZERTY | `socle::keys::consume(ctx, Modifiers::COMMAND, Key::Num1)` : touche physique, ça marche |
@@ -60,7 +69,7 @@ Features : `["ui", "images", "img-exr", "img-svg", "img-jxl", "img-wic", "settin
 
 | Avant | Après |
 |---|---|
-| `src/theme.rs` | `socle::theme` (identique) |
+| `src/theme.rs` | `socle::theme` ; garder le gras des titres Word avec `install_fonts_with(ctx, FontOptions { bold: true, ..Default::default() })` (+1 Mo). Ajouter `emoji: true` seulement si on veut voir les emoji dans les documents (+12 Mo) |
 | `src/icons.rs` | `socle::icons` : mêmes noms (`Icon::Play`… `Icon::Clean`), même dessin, mêmes `button` / `wide` (ce dernier prend `&socle::theme::Palette`) |
 | `src/wic.rs` + `open_any` | `socle::images::decode(path, &cancel)` : `image` d'abord, puis PSD, RAW, SVG, EXR, JXL en Rust, et WIC en repli. Les messages « installez l'extension HEIF / AV1 / RAW » sont conservés. `encode_heic` reste dans le lecteur (sert aux tests) |
 | `kind::ALL_EXTS` pour les images | compléter avec `socle::images::extensions()` (psd, psb, exr, svg, jxl, qoi, tga, hdr…) |
@@ -77,7 +86,7 @@ Features : `["ui", "settings", "crash", "instance"]`.
 |---|---|
 | `src/theme.rs` (CRLF, `#![allow(dead_code)]`) | `socle::theme` |
 | emoji ⏸ ⏻ ⏾ ⊘ 🎮 🐳 👻 📈 🛡 🧹 ⚙ ☀ 🌙 🔍 ⋯ ▸ ▾ ▲▼ 📁 📷 🔊 🌳 ⟳ | `Icon::Pause/Power/Sleep/Block/Gamepad/Container/Ghost/Chart/Shield/Broom/Settings/Sun/Moon/Search/More/ChevronRight/ChevronDown/ChevronUp/Folder/Camera/Volume/Tree/Refresh` ; aussi `Cpu`, `Memory`, `Bolt` pour les graphiques |
-| palette maison (`Palette2`, Ctrl+K / Ctrl+P) | `socle::ui::Palette` ; pour V1 « tuer par port », lire `palette.query()` (`:3000`) et ajouter une commande dynamique avant `show` |
+| palette maison (`Palette2`, Ctrl+K / Ctrl+P) | `socle::ui::Palette` ; pour V1 « tuer par port », lire `palette.query()` (`:3000`) et ajouter une commande dynamique avant `show`. Ouvrir directement sur `:` avec `palette.open_with(":")` (v0.1.3) |
 | `already_running` (mutex + FindWindow) | `socle::instance::start("Vigie", &args)` pour la fenêtre. Ne pas l'appeler en mode sans fenêtre (`--avant-jeu` / `--apres-jeu`) ni après une élévation (même contournement qu'aujourd'hui) |
 | `install_crash_log` | `socle::crash::install("Vigie", ...)`. Marche avec `panic = "abort"` |
 | Ctrl+1–4 cassés en AZERTY | `socle::keys::consume_ctrl_digit(ctx)` (ou `keys::consume(ctx, Modifiers::COMMAND, Key::Num1)`) : touche physique pour les chiffres |
@@ -88,7 +97,7 @@ Features : `["ui", "settings", "crash", "instance"]` (+ `images` si les miniatur
 
 | Avant | Après |
 |---|---|
-| `src/theme.rs` | `socle::theme` |
+| `src/theme.rs` | `socle::theme` ; `FontOptions { bold: true, .. }` si Tube utilise du gras, et `emoji: true` seulement pour les titres avec emoji (+12 Mo) |
 | `src/icons.rs` (`Ic`) | `socle::icons::Icon`. Correspondance : `Full` → `Fullscreen`, `ExitFull` → `Unfullscreen`, `Vol(n)` → `VolumeLevel(n)`, `Gear` → `Settings`, `List` → `Playlist`. Les autres gardent leur nom. Les icônes reprises de Tube sont ~18 % plus grandes qu'avant pour s'aligner sur la grille 24 : passer un rectangle plus petit si besoin |
 | `Play/Pause/Close/Sun/Moon/Plus/Mute` | ce sont maintenant les dessins du lecteur (légères différences) |
 | `already_running` (mutex + EnumWindows) | `socle::instance::start("Tube", &args)` : permet enfin `Tube.exe "recherche"` depuis Ultimate (intégration « Guide ») |

@@ -178,40 +178,97 @@ pub fn apply(ctx: &egui::Context, p: &Palette) {
     ctx.set_visuals_of(th, v);
 }
 
-/// Installe Segoe UI (+ Bold dans la famille `bold`, Emoji, Symbol) et Consolas.
-/// Lit ~4 Mo de polices : à appeler une fois au démarrage.
+/// Polices facultatives : chacune coûte de la RAM (le fichier entier reste en mémoire), et les
+/// apps dessinent leurs pictogrammes en icônes vectorielles. Mesures dans STACK.md §2.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FontOptions {
+    /// Segoe UI Bold (~1 Mo) pour la famille `bold`. Sans lui, `bold` est un alias de Segoe UI
+    /// normal (même rendu, aucun coût) : le code qui l'utilise marche toujours.
+    pub bold: bool,
+    /// Segoe UI Emoji (~13 Mo en RAM !) : seulement si l'app affiche des emoji venus de
+    /// l'extérieur (titres YouTube, noms de fichiers…).
+    pub emoji: bool,
+    /// Segoe UI Symbol (~2,5 Mo) en secours : flèches, ⋯, ●, symboles techniques. Activé par
+    /// défaut comme dans l'explorateur d'origine.
+    pub symbols: bool,
+}
+
+impl Default for FontOptions {
+    /// Ni gras ni emoji ; symboles oui (ce que chargeait l'explorateur avant le socle).
+    fn default() -> Self {
+        FontOptions { bold: false, emoji: false, symbols: true }
+    }
+}
+
+/// Installe Segoe UI et Consolas, plus les polices choisies par défaut (`FontOptions::default()`).
+/// À appeler une fois au démarrage.
 pub fn install_fonts(ctx: &egui::Context) {
+    install_fonts_with(ctx, FontOptions::default());
+}
+
+/// Installe Segoe UI, Consolas et les polices facultatives demandées.
+pub fn install_fonts_with(ctx: &egui::Context, opt: FontOptions) {
+    ctx.set_fonts(font_definitions(opt));
+    #[cfg(feature = "icons")]
+    crate::icons::set_bold_available(true);
+}
+
+/// Définitions de polices (séparé pour les tests et la mesure de RAM).
+pub fn font_definitions(opt: FontOptions) -> egui::FontDefinitions {
     let mut fonts = egui::FontDefinitions::default();
     let load = |p: &str| std::fs::read(p).ok();
-    if let Some(bytes) = load("C:\\Windows\\Fonts\\segoeui.ttf") {
+    if let Some(bytes) = load(r"C:\Windows\Fonts\segoeui.ttf") {
         fonts.font_data.insert("segoe".into(), egui::FontData::from_owned(bytes).into());
         fonts.families.entry(egui::FontFamily::Proportional).or_default().insert(0, "segoe".into());
     }
-    if let Some(bytes) = load("C:\\Windows\\Fonts\\consola.ttf") {
+    if let Some(bytes) = load(r"C:\Windows\Fonts\consola.ttf") {
         fonts.font_data.insert("consolas".into(), egui::FontData::from_owned(bytes).into());
         fonts.families.entry(egui::FontFamily::Monospace).or_default().insert(0, "consolas".into());
     }
-    // Gras (titres Word, étiquettes)
+    if opt.emoji {
+        if let Some(bytes) = load(r"C:\Windows\Fonts\seguiemj.ttf") {
+            fonts.font_data.insert("emoji".into(), egui::FontData::from_owned(bytes).into());
+            fonts.families.entry(egui::FontFamily::Proportional).or_default().push("emoji".into());
+        }
+    }
+    if opt.symbols {
+        if let Some(bytes) = load(r"C:\Windows\Fonts\seguisym.ttf") {
+            fonts.font_data.insert("segsym".into(), egui::FontData::from_owned(bytes).into());
+            fonts.families.entry(egui::FontFamily::Proportional).or_default().push("segsym".into());
+        }
+    }
+    // Famille `bold` : toujours définie (sinon egui paniquerait), vrai gras seulement sur demande.
     let mut bold = Vec::new();
-    if let Some(bytes) = load("C:\\Windows\\Fonts\\segoeuib.ttf") {
-        fonts.font_data.insert("segoe-bold".into(), egui::FontData::from_owned(bytes).into());
-        bold.push("segoe-bold".to_string());
+    if opt.bold {
+        if let Some(bytes) = load(r"C:\Windows\Fonts\segoeuib.ttf") {
+            fonts.font_data.insert("segoe-bold".into(), egui::FontData::from_owned(bytes).into());
+            bold.push("segoe-bold".to_string());
+        }
     }
     bold.extend(fonts.families.get(&egui::FontFamily::Proportional).cloned().unwrap_or_default());
     fonts.families.insert(egui::FontFamily::Name("bold".into()), bold);
-    #[cfg(feature = "icons")]
-    crate::icons::set_bold_available(true);
-    // Emoji / pictogrammes (⏸ 📷 🔊…)
-    if let Some(bytes) = load("C:\\Windows\\Fonts\\seguiemj.ttf") {
-        fonts.font_data.insert("emoji".into(), egui::FontData::from_owned(bytes).into());
-        fonts.families.entry(egui::FontFamily::Proportional).or_default().push("emoji".into());
+    fonts
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn polices_par_defaut_legeres() {
+        let f = font_definitions(FontOptions::default());
+        assert!(!f.font_data.contains_key("emoji"), "pas d'emoji par défaut (13 Mo)");
+        assert!(!f.font_data.contains_key("segoe-bold"), "pas de gras par défaut");
+        assert!(f.families.contains_key(&egui::FontFamily::Name("bold".into())), "la famille bold existe quand même");
+        let all = font_definitions(FontOptions { bold: true, emoji: true, symbols: true });
+        assert!(all.font_data.contains_key("emoji") && all.font_data.contains_key("segoe-bold"));
+        // rendu avec la famille bold sans gras installé : ne panique pas
+        let ctx = egui::Context::default();
+        install_fonts(&ctx);
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            ui.label(egui::RichText::new("Titre").family(bold()));
+        });
     }
-    // Symboles (flèches, etc.) en secours
-    if let Some(bytes) = load("C:\\Windows\\Fonts\\seguisym.ttf") {
-        fonts.font_data.insert("segsym".into(), egui::FontData::from_owned(bytes).into());
-        fonts.families.entry(egui::FontFamily::Proportional).or_default().push("segsym".into());
-    }
-    ctx.set_fonts(fonts);
 }
 
 impl Palette {

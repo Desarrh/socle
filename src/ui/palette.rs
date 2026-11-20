@@ -70,6 +70,12 @@ impl Palette {
         self.query.clear();
         self.sel = 0;
     }
+    /// Ouvre la palette avec une saisie déjà tapée, curseur à la fin (ex. Vigie : `:` pour
+    /// chercher par port).
+    pub fn open_with(&mut self, query: impl Into<String>) {
+        self.open();
+        self.query = query.into();
+    }
     pub fn close(&mut self) {
         self.open = false;
     }
@@ -160,6 +166,9 @@ impl Palette {
                 );
                 if fresh || !r.has_focus() {
                     r.request_focus();
+                }
+                if fresh {
+                    super::set_cursor_end(ui.ctx(), egui::Id::unique("socle-palette-saisie"), &self.query);
                 }
                 if r.changed() {
                     new_sel = Some(0);
@@ -294,8 +303,29 @@ mod tests {
         assert_eq!(pal.rank(&cmds)[0], 0);
         pal.query = "vue liste".into(); // par le groupe
         assert_eq!(pal.rank(&cmds)[0], 1);
+        pal.open_with(":");
+        assert!(pal.is_open() && pal.query() == ":");
         pal.query.clear();
         pal.recent = vec!["theme".into()];
         assert_eq!(pal.rank(&cmds)[0], 3, "les récentes d'abord");
+    }
+
+    /// `open_with(":")` puis frappe de « 3000 » : la saisie continue après le « : » (rendu hors écran).
+    #[test]
+    fn ouverture_preremplie() {
+        let ctx = egui::Context::default();
+        let p = crate::theme::palette(false);
+        let cmds = vec![Command::new("a", "A")];
+        let mut pal = Palette::default();
+        pal.open_with(":");
+        let mut frame = |ev: Vec<egui::Event>| {
+            let _ = ctx.run_ui(egui::RawInput { events: ev, ..Default::default() }, |ui| {
+                pal.show(ui.ctx(), &p, &cmds);
+            });
+        };
+        frame(vec![]);
+        frame(vec![]);
+        frame(vec![egui::Event::Text("3000".into())]);
+        assert_eq!(pal.query(), ":3000");
     }
 }

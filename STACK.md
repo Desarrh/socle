@@ -1,6 +1,6 @@
 # Socle — stack technique (document de référence)
 
-Bibliothèque commune aux applis egui (`explorateur`, `lecteur-universel`, `vigie`, `tube`). Version 0.1.2. Dépôt public : https://github.com/Desarrh/socle. Pas encore utilisée par les apps : voir [MIGRATION.md](MIGRATION.md).
+Bibliothèque commune aux applis egui (`explorateur`, `lecteur-universel`, `vigie`, `tube`). Version 0.1.3 (prête, pas encore publiée). Dépôt public : https://github.com/Desarrh/socle. Pas encore utilisée par les apps : voir [MIGRATION.md](MIGRATION.md).
 
 ## 1. But et direction
 
@@ -63,6 +63,17 @@ Bibliothèque commune aux applis egui (`explorateur`, `lecteur-universel`, `vigi
 
 `egui` est pris **sans** `default_fonts` : les polices viennent de Windows, comme dans les apps (les polices d'egui coûteraient ~630 Ko).
 
+**RAM des polices** (`theme::FontOptions`, mesurée par `examples/polices.rs` : mémoire privée après installation et rendu d'une page de texte) :
+
+| Polices | RAM | Défaut |
+|---|---:|---|
+| Segoe UI + Consolas (toujours) | +1,7 Mo | oui |
+| `symbols` : Segoe UI Symbol (flèches, ⋯, ●) | +2,4 Mo | oui (ce que chargeait l'explorateur) |
+| `bold` : Segoe UI Bold (vrai gras de la famille `bold`) | +1,0 Mo | non : `bold` est alors un alias du normal |
+| `emoji` : Segoe UI Emoji | **+12,1 Mo** | non |
+
+`install_fonts(ctx)` = défaut (+4,1 Mo). La v0.1.2 chargeait tout (+17,1 Mo), soit 13 Mo de trop pour des apps passées aux icônes vectorielles (constaté par l'explorateur : 29 → 43 Mo).
+
 **Commandes** : `cargo test --release --features full` · `cargo bench --features full` · `cargo run --release --example demo --features full [-- dossier]` · `cargo run --release --example demo --features full -- --capture <dossier>` (captures PNG hors écran) · `sh scripts/taille.sh` (taille par feature).
 
 ## 3. Architecture
@@ -86,6 +97,7 @@ Bibliothèque commune aux applis egui (`explorateur`, `lecteur-universel`, `vigi
 | `src/paths.rs` | `config_dir`, `cache_dir`, `write_atomic` |
 | `src/settings.rs`, `crash.rs`, `instance.rs`, `update.rs` | utilitaires |
 | `examples/demo.rs` | démo complète (boucle winit + rendu CPU des apps, mode `--capture`) |
+| `examples/polices.rs` | RAM de chaque police facultative |
 | `examples/taille.rs`, `scripts/taille.sh` | mesure de la taille ajoutée par feature |
 | `benches/perf.rs` | benchmarks (échoue si l'objectif de 5 ms est dépassé) |
 
@@ -97,7 +109,7 @@ Bibliothèque commune aux applis egui (`explorateur`, `lecteur-universel`, `vigi
 
 Le socle **porte** la DA commune (DIRECTION.md §3) : la table des couleurs est celle d'`explorateur/STACK.md` §4, inchangée.
 
-- **Thème** : copie de `explorateur/src/theme.rs` plus ce que le lecteur et Tube avaient ajouté (famille `bold` = Segoe UI Bold, police emoji en secours). Diff fait sur les 4 copies : rien d'autre ne différait (Vigie et Tube ne différaient que par les fins de ligne CRLF et `#![allow(dead_code)]`).
+- **Thème** : copie de `explorateur/src/theme.rs` plus ce que le lecteur et Tube avaient ajouté (famille `bold` = Segoe UI Bold, police emoji en secours), devenu facultatif en 0.1.3 (`install_fonts_with(ctx, FontOptions { bold, emoji, symbols })`). Diff fait sur les 4 copies : rien d'autre ne différait (Vigie et Tube ne différaient que par les fins de ligne CRLF et `#![allow(dead_code)]`).
 - **Ajouts** : `Palette::seg_on()` (bouton actif du segmenté, `#2B4470` en sombre, en dur avant dans l'explorateur), `clear_u32()` (vidage du tampon softbuffer), constantes `taille` (15 / 13,5 / 12,5 / 12 / 11), `arrondi` (6 / 8 / 10 / 12) et `dim` (ligne 28, bouton 32).
 - **Icônes** : grille 24 × 24, trait 1,8 (au moins 1,2 px), couleur passée par l'app. Les icônes du lecteur gardent leur dessin. Celles de Tube aussi, converties de leur repère centré (1 unité = 8,8 de grille, contre 7,44 avant, pour avoir la même taille optique). Les nouvelles (fichiers, navigation, Vigie) suivent le même style : contour, coins arrondis, rares aplats. Captures dans la démo (`--capture`).
 - **Composants** : contrôle segmenté (fond `soft`, arrondi 9, marge 3, bouton actif arrondi 7), modale (fond noir à 35 %, carte `surface` arrondie 12, ombre 12/40, sans fondu pour s'afficher dans la même image), palette (largeur 640, à 90 px du haut, saisie en 17, lignes de 40, raccourcis en « touches » `soft`), liste d'autocomplétion (lignes de 28, icône horloge pour l'historique), toasts dans la barre d'état (12 px, icône info / coche / alerte, `del` pour les erreurs, fondu sur 400 ms, 4 s ou 8 s pour une erreur).
@@ -116,7 +128,7 @@ Le socle **porte** la DA commune (DIRECTION.md §3) : la table des couleurs est 
 
 ## 6. Fonctionnalités (ce qui marche aujourd'hui)
 
-Testé par `cargo test --release --features full` (30 tests) et `cargo bench --features full` :
+Testé par `cargo test --release --features full` (32 tests) et `cargo bench --features full` :
 
 - **Recherche floue** : accents et casse ignorés, préfixe, sous-chaîne, initiales (`cev` → « Capture Écran Vidéos », `ula` → `UltimateLauncher`), lettres sautées, fautes de frappe (1 dès 5 lettres, 2 dès 9), plusieurs mots (`nouv dos`), bonus par entrée (fréquence, épinglé), surlignage des lettres trouvées.
   Mesures sur 100 000 noms (24 caractères en moyenne), max sur 30 essais : de 0,6 à 2,1 ms selon la requête ; index construit en 26 ms.

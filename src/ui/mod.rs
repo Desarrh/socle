@@ -398,12 +398,12 @@ pub fn autocomplete_field(ui: &mut Ui, p: &Colors, id: egui::Id, state: &mut Aut
 }
 
 /// Place le curseur en fin de texte (après une complétion).
-fn set_cursor_end(ctx: &egui::Context, id: egui::Id, text: &str) {
-    if let Some(mut st) = egui::TextEdit::load_state(ctx, id) {
-        let end = egui::text::CCursor::new(text.chars().count());
-        st.cursor.set_char_range(Some(egui::text::CCursorRange::one(end)));
-        st.store(ctx, id);
-    }
+pub(crate) fn set_cursor_end(ctx: &egui::Context, id: egui::Id, text: &str) {
+    // état absent (1ʳᵉ ouverture) : on le crée, sinon le curseur partirait au début
+    let mut st = egui::TextEdit::load_state(ctx, id).unwrap_or_default();
+    let end = egui::text::CCursor::new(text.chars().count());
+    st.cursor.set_char_range(Some(egui::text::CCursorRange::one(end)));
+    st.store(ctx, id);
 }
 
 /// Point d'ancrage utile : coin d'un rectangle décalé (pour placer un menu ⋯).
