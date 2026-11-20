@@ -254,9 +254,20 @@ pub fn search_field(ui: &mut Ui, p: &Colors, id: egui::Id, text: &mut String, hi
     icons::paint(ui.painter(), Rect::from_center_size(pos2(rect.left() + 16.0, rect.center().y), vec2(16.0, 16.0)), Icon::Search, p.muted);
     let clear_w = if text.is_empty() { 0.0 } else { 26.0 };
     let er = Rect::from_min_max(pos2(rect.left() + 30.0, rect.top()), pos2(rect.right() - 6.0 - clear_w, rect.bottom()));
-    let resp = ui.put(
-        er,
-        egui::TextEdit::singleline(text).id(id).hint_text(hint).frame(Frame::NONE).font(FontId::proportional(crate::theme::taille::TEXTE)).align(egui::Align2::LEFT_CENTER),
+    // Le TextEdit est dessiné dans un Ui enfant qui ne touche pas au curseur du parent : avec
+    // `ui.put`, le curseur reculait au bord droit du TextEdit (avant le bouton ×) et le widget
+    // suivant chevauchait le cadre de ~26 px (défaut signalé par le lecteur).
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(er).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    let resp = child.add(
+        egui::TextEdit::singleline(text)
+            .id(id)
+            .hint_text(hint)
+            .frame(Frame::NONE)
+            // largeur et marge explicites : sinon le TextEdit prend sa largeur par défaut + marge
+            .desired_width(er.width())
+            .margin(Margin::ZERO)
+            .font(FontId::proportional(crate::theme::taille::TEXTE))
+            .align(egui::Align2::LEFT_CENTER),
     );
     if !text.is_empty() {
         let cr = Rect::from_center_size(pos2(rect.right() - 17.0, rect.center().y), vec2(22.0, 22.0));
@@ -286,7 +297,8 @@ pub struct AutoField {
     pub suggestions: Vec<Suggestion>,
     /// Suggestion surlignée (↑↓), `None` = la saisie.
     pub sel: Option<usize>,
-    last: Option<String>,
+    /// (saisie, version des données) des suggestions affichées.
+    last: Option<(String, u64)>,
     open: bool,
 }
 
@@ -349,10 +361,11 @@ pub fn autocomplete_field(ui: &mut Ui, p: &Colors, id: egui::Id, state: &mut Aut
         state.open = true;
         state.sel = None;
     }
-    // Suggestions recalculées seulement quand la saisie change (< 1 ms, souvent ~µs).
-    if state.last.as_deref() != Some(text.as_str()) {
+    // Suggestions recalculées quand la saisie OU les données changent (candidats arrivés après la frappe).
+    let key = (text.clone(), ac.generation());
+    if state.last.as_ref() != Some(&key) {
         state.suggestions = ac.suggest(text, 8);
-        state.last = Some(text.clone());
+        state.last = Some(key);
     }
     let show = (resp.has_focus() || completed) && state.open && !state.suggestions.is_empty();
     if show {
@@ -409,4 +422,61 @@ pub(crate) fn set_cursor_end(ctx: &egui::Context, id: egui::Id, text: &str) {
 /// Point d'ancrage utile : coin d'un rectangle décalé (pour placer un menu ⋯).
 pub fn below(r: Rect, dx: f32) -> Pos2 {
     r.left_bottom() + vec2(dx, 4.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame(ctx: &egui::Context, events: Vec<egui::Event>, f: impl FnMut(&mut Ui)) {
+        let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 600.0))), events, ..Default::default() };
+        let _ = ctx.run_ui(raw, f);
+    }
+
+    /// Le champ occupe exactement sa largeur, avec ou sans texte (bouton ×), et le widget
+    /// suivant commence après le cadre (avant : il le chevauchait de ~26 px).
+    #[test]
+    fn champ_de_recherche_dans_sa_zone() {
+        let ctx = egui::Context::default();
+        let p = crate::theme::palette(false);
+        for initial in ["", "texte assez long pour remplir le champ de recherche"] {
+            let mut t = initial.to_string();
+            let mut used = 0.0;
+            frame(&ctx, vec![], |ui| {
+                ui.horizontal(|ui| {
+                    let x0 = ui.cursor().left();
+                    let r = search_field(ui, &p, egui::Id::unique("s"), &mut t, "x", 200.0);
+                    assert!(r.rect.right() <= x0 + 200.0 + 0.5, "TextEdit déborde : {:?}", r.rect);
+                    used = ui.min_rect().width();
+                    let next = ui.label("suite").rect.left();
+                    assert!(next >= x0 + 200.0, "le widget suivant commence à {next}, dans le cadre (fin à {})", x0 + 200.0);
+                });
+            });
+            assert!(used <= 200.5, "le champ occupe {used} px au lieu de 200");
+        }
+    }
+
+    /// Candidats arrivés après la frappe : la liste se remplit sans nouvelle touche.
+    #[test]
+    fn candidats_tardifs() {
+        let ctx = egui::Context::default();
+        let p = crate::theme::palette(false);
+        let mut ac = Autocomplete::default();
+        let mut st = AutoField::default();
+        let mut t = String::new();
+        let id = egui::Id::unique("a");
+        let run = |ac: &Autocomplete, st: &mut AutoField, t: &mut String, ev: Vec<egui::Event>| {
+            frame(&ctx, ev, |ui| {
+                autocomplete_field(ui, &p, id, st, ac, t, "", 200.0);
+            });
+        };
+        ctx.memory_mut(|m| m.request_focus(id));
+        run(&ac, &mut st, &mut t, vec![]);
+        run(&ac, &mut st, &mut t, vec![egui::Event::Text("tel".into())]);
+        assert_eq!(t, "tel");
+        assert!(st.suggestions.is_empty());
+        ac.set_candidates(["Téléchargements".to_string()]);
+        run(&ac, &mut st, &mut t, vec![]);
+        assert_eq!(st.suggestions.first().map(|s| s.text.as_str()), Some("Téléchargements"));
+    }
 }

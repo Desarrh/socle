@@ -1,6 +1,6 @@
 # Socle — stack technique (document de référence)
 
-Bibliothèque commune aux applis egui (`explorateur`, `lecteur-universel`, `vigie`, `tube`). Version 0.1.3 (prête, pas encore publiée). Dépôt public : https://github.com/Desarrh/socle. Pas encore utilisée par les apps : voir [MIGRATION.md](MIGRATION.md).
+Bibliothèque commune aux applis egui (`explorateur`, `lecteur-universel`, `vigie`, `tube`). Version 0.1.4. Dépôt public : https://github.com/Desarrh/socle. Pas encore utilisée par les apps : voir [MIGRATION.md](MIGRATION.md).
 
 ## 1. But et direction
 
@@ -38,7 +38,7 @@ Bibliothèque commune aux applis egui (`explorateur`, `lecteur-universel`, `vigi
 | `crash` | `crash.log` | — |
 | `instance` | instance unique | windows-sys |
 | `update` | GitHub Releases | serde_json, zip |
-| `testmode` | mode test (règle n° 0) : fenêtre invisible à l'écran (opacité 0) sans focus, capture PrintWindow, priorité basse | windows-sys |
+| `testmode` | mode test (règle n° 0) : fenêtre invisible à l'écran (opacité 0) sans focus, capture PrintWindow, focus egui forcé, priorité basse | windows-sys, egui |
 | `full` | tout (démo, tests) | |
 
 **Taille ajoutée par feature** (mesurée par `sh scripts/taille.sh` : exe témoin qui imite une app, egui + `image` png/jpeg/gif/webp/bmp/ico = 4 602 Ko, même profil release que les apps) :
@@ -89,10 +89,11 @@ Bibliothèque commune aux applis egui (`explorateur`, `lecteur-universel`, `vigi
 | `src/ui/mod.rs` | `trunc`, `paint_text_left/right`, `ago`, `highlighted`, `section_header`, `Toasts`, `segmented`, `modal`, `search_field`, `autocomplete_field` |
 | `src/ui/palette.rs` | `Command`, `Palette` (Ctrl+K), `help_window` (F1) |
 | `src/images/mod.rs` | `detect`, `decode`, `thumbnail`, `fit`, `DiskCache`, `thumbnail_cached`, `Pool` |
+| `src/images/dds.rs` | DDS non compressés (masques de bits, DX10 8 bits par canal) |
 | `src/images/psd.rs` | image composite PSD/PSB (RLE ou brut, 8/16/32 bits, RVB/gris/CMJN/indexé) |
 | `src/images/raw.rs` | JPEG d'aperçu des RAW |
 | `src/images/svg.rs`, `wic.rs` | resvg ; WIC (complet + réduit au décodage) |
-| `src/testmode.rs` | `enabled`, `hide`, `capture`, `foreground`, `low_priority` |
+| `src/testmode.rs` | `enabled`, `hide`, `capture`, `foreground`, `prepare_input` / `force_focus`, `low_priority` |
 | `examples/testmode_check.rs` | vraie fenêtre winit + egui en mode test : compte les images dessinées, capture, vérifie le focus |
 | `src/paths.rs` | `config_dir`, `cache_dir`, `write_atomic` |
 | `src/settings.rs`, `crash.rs`, `instance.rs`, `update.rs` | utilitaires |
@@ -123,20 +124,24 @@ Le socle **porte** la DA commune (DIRECTION.md §3) : la table des couleurs est 
 - Mise à jour : drapeau de relance unifié `--apres-maj` (l'ancien `--after-update` est reconnu), ancien exe `.exe.old` (et `.old`) supprimé au démarrage.
 - Raccourcis fournis : Ctrl+K (palette), F1 (aide), Tab (compléter), ↑↓ / Entrée / Échap.
 - **AZERTY** : egui-winit 0.37 transmet la touche logique (Ctrl+3 arrive comme `Key::Quote`). Lire les raccourcis avec `socle::keys` (`consume`, `pressed`, `consume_ctrl_digit`) : la rangée des chiffres passe par la touche physique, et Ctrl+chiffre redevient utilisable.
-- Git : auteur `Desarrh`, sans mention de Claude. Dépôt public https://github.com/Desarrh/socle, versions par tag (`v0.1.0` → `v0.1.2`).
+- Git : auteur `Desarrh` uniquement. Dépôt public https://github.com/Desarrh/socle, versions par tag (`v0.1.0` → `v0.1.4`).
 - **Tests (règle n° 0)** : jamais de fenêtre visible, de focus pris, d'entrée simulée ni d'écriture dans les apps ou réglages de l'utilisateur. Captures hors écran (`--capture`), tube d'instance au nom de test, fichiers dans `%TEMP%`. Le test de `testmode` affiche une fenêtre à opacité 0, sans activation, et vérifie que le focus ne bouge pas. `examples/testmode_check.rs` montre qu'une fenêtre hors écran ne marche pas (capture blanche) et qu'une fenêtre invisible à l'écran marche.
 
 ## 6. Fonctionnalités (ce qui marche aujourd'hui)
 
-Testé par `cargo test --release --features full` (32 tests) et `cargo bench --features full` :
+Testé par `cargo test --release --features full` (40 tests) et `cargo bench --features full` :
 
 - **Recherche floue** : accents et casse ignorés, préfixe, sous-chaîne, initiales (`cev` → « Capture Écran Vidéos », `ula` → `UltimateLauncher`), lettres sautées, fautes de frappe (1 dès 5 lettres, 2 dès 9), plusieurs mots (`nouv dos`), bonus par entrée (fréquence, épinglé), surlignage des lettres trouvées.
   Mesures sur 100 000 noms (24 caractères en moyenne), max sur 30 essais : de 0,6 à 2,1 ms selon la requête ; index construit en 26 ms.
 - **Autocomplétion** : historique fréquence × récence (borné à 200), candidats fournis par l'app, Tab = suggestion choisie, sinon plus long préfixe commun, sinon meilleure suggestion. 1 à 2 ms sur 100 000 candidats.
 - **Palette Ctrl+K** : recherche floue sur le libellé puis sur « groupe + libellé », récentes en tête, commandes désactivées grisées, raccourcis affichés, `query()` pour les commandes dynamiques. Aide F1 générée depuis les mêmes commandes.
-- **Images** : PNG, JPEG, GIF, WebP, BMP, ICO, TIFF, TGA, QOI, HDR, DDS (BC1–3 en Rust, le reste par WIC), PSD/PSB, aperçu RAW, EXR, SVG/SVGZ, JPEG XL, HEIC/AVIF/JXR (WIC). Détection par signature puis extension, repli WIC si le décodeur Rust échoue, tonification des images flottantes.
+- **Images** : PNG, JPEG, GIF, WebP, BMP, ICO, TIFF, TGA (compressé ou non), QOI, HDR, DDS (non compressé et BC1–3 en Rust, BC4–7 par WIC), PSD/PSB, aperçu RAW, EXR, SVG/SVGZ, JPEG XL, HEIC/AVIF/JXR (WIC). Détection par signature puis extension, repli WIC si le décodeur Rust échoue, tonification des images flottantes.
   Mesures (1 thread) : JPEG 24 Mpx 135 ms en entier, **38 ms en miniature 256** (réduit par WIC) ; PSD 4000×3000 143 ms en entier, **13 ms en miniature** ; PNG 4K 84 ms ; miniature lue dans le cache disque **0,2 ms** ; SVG en 256 px 0,2 ms.
-- **Utilitaires** : réglages (fichier abîmé gardé en `.bad`, enregistrement différé `Saver`), `crash.log` + `pending()` au lancement suivant, instance unique (transmission vérifiée < 500 ms en test, < 1 ms en pratique), mise à jour (lecture de la release, remplacement avec retour arrière testé).
+- **Utilitaires** : réglages (`.tmp` unique par écriture, fichier abîmé gardé en `.bad`, enregistrement différé `Saver` avec `flush` à la fermeture), `crash.log` + `pending()` au lancement suivant, instance unique (transmission vérifiée < 500 ms en test, < 1 ms en pratique), mise à jour (lecture de la release, remplacement avec retour arrière testé).
+- **Sécurité** (audit de la v0.1.4) :
+  - **mise à jour** : `curl.exe` appelé par son chemin complet (`%SystemRoot%\System32`), HTTPS obligatoire même après une redirection, `--` avant l'adresse, adresse limitée à `https://github.com/`, empreinte SHA-256 vérifiée contre le `digest` de l'API GitHub, exe extrait limité à 500 Mo avec en-tête `MZ`, dossier temporaire nommé par le PID. Pas encore de signature ed25519 : il faudrait une clé privée en CI ;
+  - **instance** : tube créé avec `FILE_FLAG_FIRST_PIPE_INSTANCE` (refus si le nom est déjà pris) et `PIPE_REJECT_REMOTE_CLIENTS`, client en `SECURITY_IDENTIFICATION`, numéro de session dans le nom, lecture bornée à 1 s et 1 Mo ;
+  - **images** : en-têtes PSD hostiles rejetés sans panique (test de 8 cas), allocations bornées (PSD ~256 Mpx, WIC et JXL 268 Mpx, fichier 1 Go), format détecté sur 512 octets, `catch_unwind` autour des décodeurs du `Pool`.
 
 ## 7. Intégrations
 

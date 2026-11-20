@@ -77,12 +77,29 @@ pub fn decode(bytes: &[u8], max: u32) -> Result<RgbaImage, String> {
         m => return Err(format!("PSD : mode couleur {m} non pris en charge")),
     }
     .min(channels);
+    // Pas assez de canaux pour le mode : fichier abîmé ou hostile → erreur, jamais de panique.
+    let needed = match mode {
+        3 | 9 => 3,
+        4 => 4,
+        _ => 1,
+    };
+    if channels < needed {
+        return Err(format!("PSD : {channels} canal(aux) pour un mode qui en demande {needed}"));
+    }
     let alpha = channels > used && matches!(mode, 1 | 3); // 1er canal supplémentaire = transparence
     let need = used + alpha as usize;
 
     let step = if max == 0 { 1 } else { (w.max(h) / max as usize).max(1) };
     let (ow, oh) = (w.div_ceil(step), h.div_ceil(step));
+    // Mémoire bornée avant toute allocation : ~256 Mpx de plans (et autant pour la sortie RGBA).
+    if (ow as u64) * (oh as u64) * (need as u64 + 4) > 256 * 1024 * 1024 * 4 {
+        return Err(format!("PSD trop grand ({w} × {h})"));
+    }
     let row_bytes = w * bpc;
+    let rest = bytes.len().saturating_sub(r.p) as u64;
+    if compression == 0 && (channels.min(need) as u64) * (h as u64) * (row_bytes as u64) > rest {
+        return Err("PSD tronqué".into());
+    }
     // planes[c][y * ow + x] : valeurs 8 bits
     let mut planes = vec![vec![0u8; ow * oh]; need];
     let sample = |row: &[u8], x: usize| -> u8 {
@@ -112,6 +129,10 @@ pub fn decode(bytes: &[u8], max: u32) -> Result<RgbaImage, String> {
         1 => {
             // Table des longueurs : `channels × h` entrées (u16, ou u32 en PSB).
             let n = channels * h;
+            let entry = if psb { 4 } else { 2 };
+            if (n as u64) * entry > bytes.len().saturating_sub(r.p) as u64 {
+                return Err("PSD tronqué".into());
+            }
             let mut lens = Vec::with_capacity(n);
             for _ in 0..n {
                 lens.push(if psb { r.u32()? as usize } else { r.u16()? as usize });
@@ -120,13 +141,13 @@ pub fn decode(bytes: &[u8], max: u32) -> Result<RgbaImage, String> {
             let mut acc = r.p;
             for &l in &lens {
                 offs.push(acc);
-                acc += l;
+                acc = acc.saturating_add(l);
             }
             let mut row = vec![0u8; row_bytes];
             for c in 0..need {
                 for oy in 0..oh {
                     let i = c * h + oy * step;
-                    let src = bytes.get(offs[i]..offs[i] + lens[i]).ok_or("PSD tronqué")?;
+                    let src = bytes.get(offs[i]..offs[i].saturating_add(lens[i])).ok_or("PSD tronqué")?;
                     unpack_bits(src, &mut row);
                     for ox in 0..ow {
                         planes[c][oy * ow + ox] = sample(&row, ox * step);
@@ -141,10 +162,10 @@ pub fn decode(bytes: &[u8], max: u32) -> Result<RgbaImage, String> {
     let mut out = Vec::with_capacity(ow * oh * 4);
     for i in 0..ow * oh {
         let (rv, gv, bv) = match mode {
-            3 | 9 => (planes[0][i], planes[1.min(need - 1)][i], planes[2.min(need - 1)][i]),
+            3 | 9 => (planes[0][i], planes[1][i], planes[2][i]),
             4 => {
                 // CMJN stocké inversé dans les PSD (0 = encre pleine)
-                let k = planes[3.min(need - 1)][i] as u32;
+                let k = planes[3][i] as u32;
                 let f = |v: u8| ((v as u32 * k) / 255) as u8;
                 (f(planes[0][i]), f(planes[1][i]), f(planes[2][i]))
             }
@@ -242,4 +263,44 @@ pub fn encode_rgb_rle(img: &image::RgbImage) -> Vec<u8> {
         v.extend_from_slice(&r);
     }
     v
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode;
+
+    /// En-tête PSD : (canaux, hauteur, largeur, profondeur, mode, compression) + `extra` octets.
+    fn header(ch: u16, h: u32, w: u32, depth: u16, mode: u16, comp: u16, extra: &[u8]) -> Vec<u8> {
+        let mut v = b"8BPS".to_vec();
+        v.extend_from_slice(&1u16.to_be_bytes());
+        v.extend_from_slice(&[0; 6]);
+        v.extend_from_slice(&ch.to_be_bytes());
+        v.extend_from_slice(&h.to_be_bytes());
+        v.extend_from_slice(&w.to_be_bytes());
+        v.extend_from_slice(&depth.to_be_bytes());
+        v.extend_from_slice(&mode.to_be_bytes());
+        v.extend_from_slice(&[0; 12]); // mode couleur, ressources, calques vides
+        v.extend_from_slice(&comp.to_be_bytes());
+        v.extend_from_slice(extra);
+        v
+    }
+
+    /// En-têtes hostiles : toujours une erreur, jamais de panique ni d'allocation géante.
+    #[test]
+    fn entetes_hostiles() {
+        let cas = [
+            header(0, 10, 10, 8, 3, 0, &[0; 300]),             // RVB sans canal
+            header(2, 10, 10, 8, 4, 0, &[0; 300]),             // CMJN à 2 canaux
+            header(3, 300_000, 300_000, 8, 3, 0, &[]),         // 90 Gpx
+            header(3, 60_000, 60_000, 8, 3, 1, &[]),           // table RLE plus grande que le fichier
+            header(3, 100, 100, 8, 3, 0, &[1, 2, 3]),          // données brutes tronquées
+            header(3, 4, 4, 8, 3, 1, &[0xFF; 24]),             // longueurs RLE énormes
+            header(3, 4, 4, 7, 3, 0, &[]),                     // profondeur inconnue
+            b"8BPS".to_vec(),                                  // en-tête coupé
+        ];
+        for (i, c) in cas.iter().enumerate() {
+            let r = std::panic::catch_unwind(|| decode(c, 0));
+            assert!(matches!(r, Ok(Err(_))), "cas {i} : {:?}", r.map(|x| x.map(|i| i.dimensions())));
+        }
+    }
 }

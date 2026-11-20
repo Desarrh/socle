@@ -89,17 +89,26 @@ pub struct Autocomplete {
     pub history: History,
     candidates: Vec<String>,
     index: Index,
+    /// Change à chaque `set_candidates` : le champ d'autocomplétion recalcule ses suggestions
+    /// même si la saisie n'a pas bougé (candidats arrivés d'un thread après la frappe).
+    generation: u64,
 }
 
 impl Autocomplete {
     pub fn new(history: History) -> Self {
-        Autocomplete { history, candidates: Vec::new(), index: Index::new() }
+        Autocomplete { history, candidates: Vec::new(), index: Index::new(), generation: 0 }
     }
 
     /// Remplace les candidats (ex. : noms du dossier courant). Coût : ~40 ns par entrée.
     pub fn set_candidates<I: IntoIterator<Item = String>>(&mut self, items: I) {
         self.candidates = items.into_iter().collect();
         self.index = Index::from_iter(self.candidates.iter());
+        self.generation += 1;
+    }
+
+    /// Version des données : change quand les candidats ou l'historique changent.
+    pub fn generation(&self) -> u64 {
+        self.generation.wrapping_mul(1_000_003) ^ self.history.items.len() as u64 ^ self.history.items.iter().map(|p| p.last ^ p.count as u64).fold(0u64, |a, b| a.wrapping_add(b))
     }
 
     pub fn candidates(&self) -> &[String] {

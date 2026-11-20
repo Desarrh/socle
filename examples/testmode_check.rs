@@ -1,12 +1,11 @@
 //! Vérifie `socle::testmode` avec une vraie fenêtre winit + egui (rendu CPU des apps) qui doit
-//! continuer à se redessiner. Compare la méthode actuelle (`hide` : invisible à l'écran) et
-//! l'ancienne (`hide_offscreen` : hors écran).
+//! continuer à se redessiner, avec `hide` (invisible à l'écran). La v0.1.1 plaçait la fenêtre
+//! hors écran : Windows ne la redessinait plus et la capture sortait blanche à 85 %.
 //!
-//! `cargo run --release --example testmode_check --features "ui testmode" -- invisible|hors-ecran`
+//! `cargo run --release --example testmode_check --features "theme testmode"`
 //!
 //! Respecte la règle n° 0 : fenêtre créée invisible et sans focus, jamais visible à l'écran,
 //! priorité basse, fermeture automatique après ~1,5 s.
-#![allow(deprecated)]
 
 use egui_software_backend::{BufferMutRef, ColorFieldOrder, EguiSoftwareRender};
 use std::num::NonZeroU32;
@@ -28,7 +27,6 @@ struct Gfx {
 }
 
 struct Check {
-    offscreen: bool,
     ctx: egui::Context,
     gfx: Option<Gfx>,
     frames: u32,
@@ -50,7 +48,7 @@ impl ApplicationHandler for Check {
             Ok(RawWindowHandle::Win32(h)) => h.hwnd.get(),
             _ => 0,
         };
-        if self.offscreen { socle::testmode::hide_offscreen(hwnd) } else { socle::testmode::hide(hwnd) }
+        socle::testmode::hide(hwnd);
         let context = softbuffer::Context::new(window.clone()).expect("softbuffer");
         let surface = softbuffer::Surface::new(&context, window.clone()).expect("surface");
         let egui = egui_winit::State::new(self.ctx.clone(), egui::ViewportId::ROOT, &*window, Some(1.0), None, None);
@@ -96,7 +94,7 @@ impl ApplicationHandler for Check {
                 };
                 self.result = Some(format!(
                     "{} : {} images en 1,5 s · capture {} · blanc {white:.0} % · fond {bg:.0} % · rouge {red:.1} % · focus inchangé : {}",
-                    if self.offscreen { "hors écran (ancienne méthode)" } else { "invisible à l'écran (hide)" },
+                    "invisible à l'écran (hide)",
                     self.frames,
                     if shot.is_some() { "ok" } else { "échec" },
                     socle::testmode::foreground() == self.focus
@@ -111,7 +109,7 @@ impl ApplicationHandler for Check {
         if self.start.elapsed() > Duration::from_millis(2500) && self.result.is_none() {
             let shot = self.gfx.as_ref().and_then(|g| socle::testmode::capture(g.hwnd));
             let white = shot.as_ref().map(|(_, _, px)| px.chunks_exact(4).filter(|p| p[0] > 240 && p[1] > 240 && p[2] > 240).count() * 100 / (px.len() / 4)).unwrap_or(0);
-            self.result = Some(format!("{} : figée après {} images · capture blanche à {white} %", if self.offscreen { "hors écran (ancienne méthode)" } else { "invisible à l'écran (hide)" }, self.frames));
+            self.result = Some(format!("{} : figée après {} images · capture blanche à {white} %", "invisible à l'écran (hide)", self.frames));
             el.exit();
             return;
         }
@@ -121,9 +119,8 @@ impl ApplicationHandler for Check {
 
 fn main() {
     socle::testmode::low_priority();
-    let offscreen = std::env::args().any(|a| a == "hors-ecran");
     let el = EventLoop::new().expect("boucle");
-    let mut c = Check { offscreen, ctx: egui::Context::default(), gfx: None, frames: 0, start: Instant::now(), focus: socle::testmode::foreground(), result: None };
+    let mut c = Check { ctx: egui::Context::default(), gfx: None, frames: 0, start: Instant::now(), focus: socle::testmode::foreground(), result: None };
     let _ = el.run_app(&mut c);
     println!("{}", c.result.unwrap_or_else(|| "pas de résultat".into()));
 }

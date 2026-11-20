@@ -43,7 +43,8 @@ fn to_rgba(f: &IWICImagingFactory, src: &IWICBitmapSource) -> Result<RgbaImage, 
         conv.Initialize(src, &GUID_WICPixelFormat32bppRGBA, WICBitmapDitherTypeNone, None, 0.0, WICBitmapPaletteTypeCustom).map_err(err)?;
         let (mut w, mut h) = (0u32, 0u32);
         conv.GetSize(&mut w, &mut h).map_err(err)?;
-        let mut buf = vec![0u8; (w as usize) * (h as usize) * 4];
+        too_big(w, h)?;
+        let mut buf = vec![0u8; (w as u64 * h as u64 * 4) as usize];
         conv.CopyPixels(std::ptr::null(), w * 4, &mut buf).map_err(err)?;
         RgbaImage::from_raw(w, h, buf).ok_or_else(|| "image vide".to_string())
     }
@@ -64,6 +65,9 @@ pub fn decode_scaled(path: &Path, max: u32) -> Result<RgbaImage, String> {
     unsafe {
         let (mut w, mut h) = (0u32, 0u32);
         fr.GetSize(&mut w, &mut h).map_err(err)?;
+        if w == 0 || h == 0 {
+            return Err("image vide".into());
+        }
         if w.max(h) <= max {
             return to_rgba(&f, &fr.cast::<IWICBitmapSource>().map_err(err)?);
         }
@@ -91,9 +95,10 @@ pub fn decode_scaled(path: &Path, max: u32) -> Result<RgbaImage, String> {
                 } else {
                     0
                 };
-                if bpp > 0 {
-                    let stride = (cw * bpp).next_multiple_of(4);
-                    let mut buf = vec![0u8; (stride * ch) as usize];
+                if bpp > 0 && too_big(cw, ch).is_ok() {
+                    let stride = (cw as u64 * bpp as u64).next_multiple_of(4);
+                    let mut buf = vec![0u8; (stride * ch as u64) as usize];
+                    let stride = stride as u32;
                     if tr.CopyPixels(std::ptr::null(), cw, ch, &fmt, WICBitmapTransformRotate0, stride, &mut buf).is_ok() {
                         let mut out = Vec::with_capacity((cw * ch * 4) as usize);
                         for row in buf.chunks_exact(stride as usize) {
@@ -116,6 +121,15 @@ pub fn decode_scaled(path: &Path, max: u32) -> Result<RgbaImage, String> {
         let sc = f.CreateBitmapScaler().map_err(err)?;
         sc.Initialize(&fr, tw, th, WICBitmapInterpolationModeFant).map_err(err)?;
         to_rgba(&f, &sc.cast::<IWICBitmapSource>().map_err(err)?)
+    }
+}
+
+/// Refuse les tailles déraisonnables avant d'allouer (en-tête piégé).
+fn too_big(w: u32, h: u32) -> Result<(), String> {
+    if w as u64 * h as u64 > super::MAX_PIXELS {
+        Err(format!("image trop grande ({w} × {h})"))
+    } else {
+        Ok(())
     }
 }
 

@@ -8,6 +8,8 @@
 //! - [`capture`] : capture de la fenêtre par `PrintWindow` (`PW_RENDERFULLCONTENT`), même
 //!   invisible, sans toucher à l'écran ni au presse-papiers ;
 //! - [`foreground`] : pour vérifier qu'un test n'a pas pris le focus ;
+//! - [`prepare_input`] : fenêtre jamais au premier plan, donc egui croit ne pas avoir le focus ;
+//!   en mode test, on force `RawInput.focused` pour que les champs gardent le focus ;
 //! - [`low_priority`] : processus en priorité basse (tests, compilations lancées par une app).
 //!
 //! Aucune entrée simulée n'est fournie, volontairement.
@@ -30,7 +32,7 @@ use windows_sys::Win32::Graphics::Gdi::{
 use windows_sys::Win32::Storage::Xps::{PRINT_WINDOW_FLAGS, PrintWindow};
 use windows_sys::Win32::System::Threading::{BELOW_NORMAL_PRIORITY_CLASS, GetCurrentProcess, SetPriorityClass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GWL_EXSTYLE, GetForegroundWindow, GetWindowLongPtrW, GetWindowRect, HWND_BOTTOM, LWA_ALPHA, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    GWL_EXSTYLE, GetForegroundWindow, GetWindowLongPtrW, GetWindowRect, HWND_BOTTOM, LWA_ALPHA, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
     SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPos, ShowWindow, WS_EX_APPWINDOW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
 };
 
@@ -41,9 +43,6 @@ pub const FLAG: &str = "--test-hors-ecran";
 pub fn enabled() -> bool {
     std::env::args().any(|a| a == FLAG) || std::env::var("SOCLE_TEST").is_ok_and(|v| v == "1")
 }
-
-/// Position hors écran utilisée par [`hide_offscreen`].
-pub const OFFSCREEN: (i32, i32) = (-32000, -32000);
 
 /// Rend la fenêtre **invisible sans la sortir de l'écran**, et l'affiche sans activation :
 /// opacité 0 (`WS_EX_LAYERED`), la souris la traverse (`WS_EX_TRANSPARENT`), jamais de focus
@@ -63,19 +62,20 @@ pub fn hide(hwnd: isize) {
     }
 }
 
-/// Ancienne méthode (v0.1.1) : fenêtre déplacée hors écran. **Déconseillée** : Windows ne
-/// demande plus de dessin à une fenêtre hors écran, l'app se fige et les captures sortent
-/// blanches (constaté par Tube, confirmé par `examples/testmode_check.rs`). Gardée pour comparer.
-#[deprecated(note = "utiliser `hide` : une fenêtre hors écran n'est plus redessinée")]
-pub fn hide_offscreen(hwnd: isize) {
-    let h = hwnd as HWND;
-    unsafe {
-        let ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
-        let ex = (ex | (WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW) as isize) & !(WS_EX_APPWINDOW as isize);
-        SetWindowLongPtrW(h, GWL_EXSTYLE, ex);
-        SetWindowPos(h, std::ptr::null_mut(), OFFSCREEN.0, OFFSCREEN.1, 0, 0, SWP_NOACTIVATE | SWP_NOSIZE | SWP_NOZORDER);
-        ShowWindow(h, SW_SHOWNOACTIVATE);
+/// À appeler sur l'entrée egui de chaque image, juste après `take_egui_input`, quand le mode
+/// test est actif : une fenêtre `hide` n'est jamais au premier plan (`WS_EX_NOACTIVATE`), donc
+/// egui-winit transmet `focused = false` et aucun champ ne garde le focus (`has_focus` exige
+/// que la fenêtre l'ait). On force `focused = true` pour que les tests scriptés puissent taper
+/// dans un champ. Sans effet hors mode test.
+pub fn prepare_input(raw: &mut egui::RawInput) {
+    if enabled() {
+        force_focus(raw);
     }
+}
+
+/// Force `focused = true` sans condition (tests qui savent déjà qu'ils sont en mode test).
+pub fn force_focus(raw: &mut egui::RawInput) {
+    raw.focused = true;
 }
 
 /// Fenêtre au premier plan (pour vérifier dans un test que le focus de l'utilisateur n'a pas bougé).
@@ -147,6 +147,36 @@ mod tests {
 
     /// Fenêtre de test invisible (opacité 0), sans activation, hors de la barre des tâches :
     /// rien n'apparaît à l'écran et le focus de l'utilisateur ne bouge pas.
+    /// Fenêtre jamais au premier plan : sans `force_focus`, un champ perd le focus ; avec, il le garde.
+    #[test]
+    fn focus_force_pour_les_tests() {
+        let run = |force: bool| {
+            let ctx = egui::Context::default();
+            let id = egui::Id::unique("champ");
+            let mut txt = String::new();
+            let mut focus = false;
+            for k in 0..3 {
+                let mut raw = egui::RawInput { focused: false, ..Default::default() };
+                if force {
+                    force_focus(&mut raw);
+                }
+                if k == 2 {
+                    raw.events.push(egui::Event::Text("ok".into()));
+                }
+                let _ = ctx.run_ui(raw, |ui| {
+                    let r = ui.add(egui::TextEdit::singleline(&mut txt).id(id));
+                    if k == 0 {
+                        r.request_focus();
+                    }
+                    focus = r.has_focus();
+                });
+            }
+            (focus, txt)
+        };
+        assert!(!run(false).0, "le problème signalé par le lecteur : has_focus() reste faux");
+        assert_eq!(run(true), (true, "ok".to_string()));
+    }
+
     #[test]
     fn fenetre_cachee_et_capture() {
         let class: Vec<u16> = "STATIC\0".encode_utf16().collect();

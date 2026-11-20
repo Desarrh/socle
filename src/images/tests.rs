@@ -137,3 +137,34 @@ fn erreurs_lisibles() {
     std::fs::write(&p, b"pas une image").unwrap();
     assert!(decode(&p, &Cancel::new()).is_err());
 }
+
+/// TGA non compressé (en-tête 00 00 02 00, comme un curseur .cur) : lu grâce à l'extension.
+#[test]
+fn tga_non_compresse() {
+    let img = sample();
+    let (w, h) = img.dimensions();
+    let mut v = vec![0u8, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    v.extend_from_slice(&(w as u16).to_le_bytes());
+    v.extend_from_slice(&(h as u16).to_le_bytes());
+    v.extend_from_slice(&[24, 0x20]); // 24 bits, origine en haut à gauche
+    for p in img.pixels() {
+        v.extend_from_slice(&[p[2], p[1], p[0]]);
+    }
+    let p = dir().join("brut.tga");
+    std::fs::write(&p, &v).unwrap();
+    assert_eq!(detect(&v, &p), Some(Format::Std(image::ImageFormat::Tga)));
+    check(&p);
+    // un vrai curseur reste un curseur
+    let mut cur = vec![0u8, 0, 2, 0, 1, 0, 32, 32, 0, 0];
+    cur.extend(vec![0u8; 20]);
+    assert_eq!(detect(&cur, Path::new("x.cur")), Some(Format::Std(image::ImageFormat::Ico)));
+}
+
+/// DDS non compressé : lu par `dds.rs` au lieu de « DDS non pris en charge ».
+#[test]
+fn dds_non_compresse() {
+    let p = dir().join("brut.dds");
+    let rgba = image::DynamicImage::ImageRgb8(sample()).into_rgba8();
+    std::fs::write(&p, testdata::dds_bgra(&rgba)).unwrap();
+    check(&p);
+}

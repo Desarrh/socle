@@ -4,6 +4,7 @@
 //! | Formats | Décodeur | Feature |
 //! |---|---|---|
 //! | PNG, JPEG, GIF, WebP, BMP, ICO, TIFF, TGA, QOI, HDR, DDS (BC1–BC3) | crate `image` (Rust) | `images` |
+//! | DDS non compressé (RVB/RVBA/luminance par masques, DX10 R8G8B8A8/B8G8R8A8/B8G8R8X8) | `dds.rs` (Rust, maison) | `images` |
 //! | PSD / PSB (image composite) | `psd.rs` (Rust, maison) | `images` |
 //! | Aperçu RAW (JPEG intégré : CR2, CR3, NEF, ARW, DNG, RAF, ORF, RW2, PEF, SRW…) | `raw.rs` (Rust, maison) | `images` |
 //! | OpenEXR | crate `exr` (Rust) | `img-exr` |
@@ -21,6 +22,7 @@
 //! chemin + date + taille + côté) et [`Pool`] décode sur 2–4 threads, la demande la plus récente
 //! d'abord, avec annulation.
 
+mod dds;
 mod psd;
 mod raw;
 #[cfg(feature = "img-svg")]
@@ -89,6 +91,11 @@ pub fn detect(head: &[u8], path: &Path) -> Option<Format> {
         return Some(Format::Raw);
     }
     let h = |sig: &[u8]| head.starts_with(sig);
+    // TGA n'a pas de signature, et un TGA non compressé commence par 00 00 02 00, comme un
+    // curseur .cur : l'extension décide.
+    if matches!(e.as_str(), "tga" | "icb" | "vda" | "vst") {
+        return Some(Format::Std(F::Tga));
+    }
     let f = if h(b"\x89PNG") {
         Format::Std(F::Png)
     } else if h(&[0xFF, 0xD8, 0xFF]) {
@@ -99,7 +106,7 @@ pub fn detect(head: &[u8], path: &Path) -> Option<Format> {
         Format::Std(F::WebP)
     } else if h(b"BM") {
         Format::Std(F::Bmp)
-    } else if h(&[0, 0, 1, 0]) || h(&[0, 0, 2, 0]) {
+    } else if (h(&[0, 0, 1, 0]) || h(&[0, 0, 2, 0])) && ico_plausible(head) {
         Format::Std(F::Ico)
     } else if h(b"II*\0") || h(b"MM\0*") {
         Format::Std(F::Tiff)
@@ -137,6 +144,12 @@ pub fn detect(head: &[u8], path: &Path) -> Option<Format> {
     Some(f)
 }
 
+/// ICO / CUR : 1 à 256 images, et la 1ʳᵉ entrée a un octet réservé nul.
+fn ico_plausible(head: &[u8]) -> bool {
+    let n = head.get(4..6).map(|b| u16::from_le_bytes([b[0], b[1]])).unwrap_or(0);
+    (1..=256).contains(&n) && head.get(9) == Some(&0)
+}
+
 /// Erreur lisible pour l'utilisateur (toast rouge).
 #[allow(dead_code)]
 fn unsupported(what: &str, feature: &str) -> String {
@@ -169,12 +182,38 @@ pub fn fit(img: RgbaImage, max: u32) -> RgbaImage {
 }
 
 /// `max` = 0 : image complète ; sinon taille visée (le décodeur peut réduire tôt).
+/// Au-delà, on refuse de lire le fichier en mémoire (aucune image utile n'est aussi grosse).
+pub const MAX_FILE: u64 = 1 << 30;
+/// Au-delà (~268 Mpx, 1 Go en RGBA), on refuse de décoder.
+pub const MAX_PIXELS: u64 = 1 << 28;
+
 fn load(path: &Path, max: u32, cancel: &Cancel) -> Result<RgbaImage, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("lecture de {} : {e}", path.display()))?;
+    use std::io::Read;
+    let lire = |e: std::io::Error| format!("lecture de {} : {e}", path.display());
+    let mut f = std::fs::File::open(path).map_err(lire)?;
+    let len = f.metadata().map_err(lire)?.len();
+    if len > MAX_FILE {
+        return Err(format!("fichier trop gros pour une image ({} Mo)", len >> 20));
+    }
+    // Détection sur les 512 premiers octets seulement.
+    let mut head = Vec::with_capacity(512);
+    (&mut f).take(512).read_to_end(&mut head).map_err(lire)?;
+    let fmt = detect(&head, path).ok_or_else(|| "format d'image inconnu".to_string())?;
     if cancel.is_cancelled() {
         return Err("annulé".into());
     }
-    let fmt = detect(&bytes[..bytes.len().min(512)], path).ok_or_else(|| "format d'image inconnu".to_string())?;
+    // WIC lit le fichier lui-même : inutile de le charger.
+    let bytes = if fmt == Format::Wic {
+        head
+    } else {
+        let mut b = head;
+        b.reserve(len.saturating_sub(b.len() as u64) as usize);
+        f.read_to_end(&mut b).map_err(lire)?;
+        b
+    };
+    if cancel.is_cancelled() {
+        return Err("annulé".into());
+    }
     let r = decode_format(fmt, &bytes, path, max, cancel);
     // Repli sur Windows (codecs du Store : HEIF, AV1, RAW…) quand le décodeur Rust échoue.
     #[cfg(all(feature = "img-wic", windows))]
@@ -198,6 +237,9 @@ fn decode_format(fmt: Format, bytes: &[u8], path: &Path, max: u32, cancel: &Canc
             }
             std_decode(bytes, image::ImageFormat::Jpeg)
         }
+        // DDS : `image` ne lit que BC1–BC3 ; les DDS non compressés passent par `dds.rs`
+        // (puis WIC en repli dans `load` pour BC4–BC7).
+        Format::Std(image::ImageFormat::Dds) => std_decode(bytes, image::ImageFormat::Dds).or_else(|e| dds::decode_uncompressed(bytes).ok_or(e)),
         Format::Std(f) => std_decode(bytes, f),
         Format::Psd => psd::decode(bytes, max),
         Format::Raw => raw::preview(bytes, max).ok_or_else(|| "aperçu RAW introuvable".to_string()).and_then(|j| {
@@ -225,7 +267,12 @@ fn decode_format(fmt: Format, bytes: &[u8], path: &Path, max: u32, cancel: &Canc
         Format::Jxl => {
             #[cfg(feature = "img-jxl")]
             {
+                use image::ImageDecoder;
                 let d = jxl_oxide::integration::JxlDecoder::new(std::io::Cursor::new(bytes)).map_err(|e| format!("JPEG XL : {e}"))?;
+                let (w, h) = d.dimensions();
+                if w as u64 * h as u64 > MAX_PIXELS {
+                    return Err(format!("JPEG XL trop grand ({w} × {h})"));
+                }
                 let img = image::DynamicImage::from_decoder(d).map_err(|e| format!("JPEG XL : {e}"))?;
                 Ok(to_rgba8(img))
             }
@@ -366,11 +413,10 @@ struct Job {
     id: u64,
     path: PathBuf,
     max: u32,
-    generation: u64,
 }
 
 struct Shared {
-    queue: Mutex<(Vec<Job>, u64, bool)>, // (file, génération courante, arrêt)
+    queue: Mutex<(Vec<Job>, bool)>, // (file, arrêt)
     cv: Condvar,
     cancel: Mutex<Cancel>,
 }
@@ -387,7 +433,7 @@ impl Pool {
     /// `workers` threads (2–4 conseillé), cache disque optionnel, `wake` appelé à chaque
     /// résultat (typiquement `move || ctx.request_repaint()`).
     pub fn new(workers: usize, cache: Option<DiskCache>, wake: impl Fn() + Send + Sync + 'static) -> Pool {
-        let shared = Arc::new(Shared { queue: Mutex::new((Vec::new(), 0, false)), cv: Condvar::new(), cancel: Mutex::new(Cancel::new()) });
+        let shared = Arc::new(Shared { queue: Mutex::new((Vec::new(), false)), cv: Condvar::new(), cancel: Mutex::new(Cancel::new()) });
         let (tx, rx) = std::sync::mpsc::channel();
         let wake = Arc::new(wake);
         for i in 0..workers.max(1) {
@@ -402,24 +448,27 @@ impl Pool {
                     let (job, cancel) = {
                         let mut q = sh.queue.lock().unwrap_or_else(|e| e.into_inner());
                         loop {
-                            if q.2 {
+                            if q.1 {
                                 return;
                             }
-                            let cur = q.1;
-                            q.0.retain(|j| j.generation == cur);
                             if let Some(j) = q.0.pop() {
                                 break (j, sh.cancel.lock().unwrap_or_else(|e| e.into_inner()).clone());
                             }
                             q = sh.cv.wait(q).unwrap_or_else(|e| e.into_inner());
                         }
                     };
-                    let result = if job.max == 0 {
-                        decode(&job.path, &cancel)
-                    } else if let Some(c) = &cache {
-                        thumbnail_cached(c, &job.path, job.max, &cancel)
-                    } else {
-                        thumbnail(&job.path, job.max, &cancel)
-                    };
+                    // Un décodeur qui panique (fichier piégé, bug d'une crate) ne doit tuer ni le
+                    // thread ni l'app : on le transforme en erreur.
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        if job.max == 0 {
+                            decode(&job.path, &cancel)
+                        } else if let Some(c) = &cache {
+                            thumbnail_cached(c, &job.path, job.max, &cancel)
+                        } else {
+                            thumbnail(&job.path, job.max, &cancel)
+                        }
+                    }))
+                    .unwrap_or_else(|_| Err("le décodeur a planté sur ce fichier".into()));
                     if cancel.is_cancelled() {
                         continue;
                     }
@@ -438,8 +487,7 @@ impl Pool {
         let id = self.next;
         self.next += 1;
         let mut q = self.shared.queue.lock().unwrap_or_else(|e| e.into_inner());
-        let generation = q.1;
-        q.0.push(Job { id, path: path.into(), max, generation });
+        q.0.push(Job { id, path: path.into(), max });
         drop(q);
         self.shared.cv.notify_one();
         id
@@ -449,7 +497,6 @@ impl Pool {
     /// (leurs résultats ne seront pas livrés).
     pub fn cancel_pending(&mut self) {
         let mut q = self.shared.queue.lock().unwrap_or_else(|e| e.into_inner());
-        q.1 += 1;
         q.0.clear();
         let mut c = self.shared.cancel.lock().unwrap_or_else(|e| e.into_inner());
         c.cancel();
@@ -475,7 +522,7 @@ impl Pool {
 impl Drop for Pool {
     fn drop(&mut self) {
         if let Ok(mut q) = self.shared.queue.lock() {
-            q.2 = true;
+            q.1 = true;
         }
         self.shared.cv.notify_all();
     }
@@ -490,6 +537,10 @@ pub fn to_color_image(img: &RgbaImage) -> egui::ColorImage {
 /// Fabrique de fichiers de test (tests, benchmarks, démo).
 #[doc(hidden)]
 pub mod testdata {
+    /// DDS non compressé 32 bits (BGRA, masques classiques).
+    pub fn dds_bgra(img: &image::RgbaImage) -> Vec<u8> {
+        super::dds::encode_bgra32(img)
+    }
     /// PSD RVB 8 bits compressé en RLE.
     pub fn psd_rgb_rle(img: &image::RgbImage) -> Vec<u8> {
         super::psd::encode_rgb_rle(img)

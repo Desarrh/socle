@@ -10,6 +10,7 @@
 //! Drapeau de relance unifié : `--apres-maj`. `is_after_update()` reconnaît aussi l'ancien
 //! `--after-update` de l'explorateur (une ancienne version installée relance la nouvelle avec).
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -38,10 +39,19 @@ pub struct Release {
     /// Page de la release (« nouveautés »).
     pub page: String,
     pub notes: String,
+    /// Empreinte SHA-256 de l'asset (champ `digest` de l'API GitHub), en hexadécimal.
+    pub sha256: String,
 }
 
+/// Taille maximale de l'exe extrait du zip.
+const MAX_EXE: u64 = 500 * 1024 * 1024;
+
+/// `curl.exe` de Windows par son chemin complet (jamais un `curl.exe` posé dans le dossier
+/// courant ou le PATH), HTTPS obligatoire, redirections comprises.
 fn curl() -> Command {
-    let mut c = Command::new("curl.exe");
+    let root = std::env::var_os("SystemRoot").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+    let mut c = Command::new(root.join("System32").join("curl.exe"));
+    c.args(["--proto", "=https", "--proto-redir", "=https"]);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -77,7 +87,7 @@ impl Updater {
     pub fn check(&self) -> Result<Option<Release>, String> {
         let ua = format!("User-Agent: {}-updater", self.repo.rsplit('/').next().unwrap_or("socle"));
         let out = curl()
-            .args(["-sL", "--max-time", "15", "-H", &ua, "-H", "Accept: application/vnd.github+json"])
+            .args(["-sL", "--max-time", "15", "-H", &ua, "-H", "Accept: application/vnd.github+json", "--"])
             .arg(format!("https://api.github.com/repos/{}/releases/latest", self.repo))
             .output()
             .map_err(|e| format!("curl introuvable : {e}"))?;
@@ -99,19 +109,30 @@ impl Updater {
         let assets = v.get("assets").and_then(|a| a.as_array()).cloned().unwrap_or_default();
         let name = |a: &serde_json::Value| a.get("name").and_then(|n| n.as_str()).map(str::to_lowercase);
         let suffix = self.asset_suffix.to_lowercase();
-        let url = assets
+        let asset = assets
             .iter()
             .find(|a| name(a).is_some_and(|n| n.ends_with(&suffix)))
             .or_else(|| assets.iter().find(|a| name(a).is_some_and(|n| n.ends_with(".zip"))))
-            .and_then(|a| a.get("browser_download_url").and_then(|u| u.as_str()))
-            .ok_or("aucun zip Windows dans la release")?
-            .to_string();
+            .ok_or("aucun zip Windows dans la release")?;
+        let url = asset.get("browser_download_url").and_then(|u| u.as_str()).ok_or("asset sans adresse")?.to_string();
+        // Seulement depuis GitHub, en HTTPS.
+        if !url.starts_with("https://github.com/") {
+            return Err(format!("adresse de téléchargement refusée : {url}"));
+        }
+        let sha256 = asset
+            .get("digest")
+            .and_then(|d| d.as_str())
+            .and_then(|d| d.strip_prefix("sha256:"))
+            .filter(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+            .ok_or("release sans empreinte SHA-256 : mise à jour refusée")?
+            .to_ascii_lowercase();
         Ok(Some(Release {
             version: tag.trim_start_matches(['v', 'V']).to_string(),
             tag: tag.to_string(),
             url,
             page: v.get("html_url").and_then(|b| b.as_str()).unwrap_or("").to_string(),
             notes: v.get("body").and_then(|b| b.as_str()).unwrap_or("").to_string(),
+            sha256,
         }))
     }
 
@@ -119,7 +140,8 @@ impl Updater {
     /// puis fermer l'app). `progress` reçoit 0..1. À appeler sur un thread.
     pub fn install(&self, r: &Release, progress: &dyn Fn(f32)) -> Result<PathBuf, String> {
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-        let tmp = std::env::temp_dir().join(format!("socle-maj-{}-{}", std::process::id(), r.version));
+        // Dossier nommé par le PID seulement : la version vient du réseau, elle n'entre pas dans un chemin.
+        let tmp = std::env::temp_dir().join(format!("socle-maj-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
         let zip_path = tmp.join("release.zip");
@@ -127,11 +149,18 @@ impl Updater {
         let st = curl()
             .args(["-sL", "--fail", "--max-time", "600", "-H", "User-Agent: socle-updater", "-o"])
             .arg(&zip_path)
+            .arg("--")
             .arg(&r.url)
             .status()
             .map_err(|e| e.to_string())?;
         if !st.success() {
             return Err("téléchargement échoué".into());
+        }
+        progress(0.6);
+        let got = sha256_file(&zip_path)?;
+        if got != r.sha256 {
+            let _ = std::fs::remove_dir_all(&tmp);
+            return Err("empreinte SHA-256 différente : téléchargement corrompu ou modifié, mise à jour annulée".into());
         }
         progress(0.7);
         let new_exe = extract_exe(&zip_path, &tmp, self.exe_name)?;
@@ -141,6 +170,15 @@ impl Updater {
         progress(1.0);
         Ok(exe)
     }
+}
+
+/// SHA-256 d'un fichier, en hexadécimal minuscule.
+fn sha256_file(p: &Path) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    let mut f = std::fs::File::open(p).map_err(|e| e.to_string())?;
+    let mut h = Sha256::new();
+    std::io::copy(&mut f, &mut h).map_err(|e| e.to_string())?;
+    Ok(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 
 fn extract_exe(zip_path: &Path, dir: &Path, want: Option<&str>) -> Result<PathBuf, String> {
@@ -155,9 +193,22 @@ fn extract_exe(zip_path: &Path, dir: &Path, want: Option<&str>) -> Result<PathBu
             None => file.to_lowercase().ends_with(".exe"),
         };
         if ok {
+            if e.size() > MAX_EXE {
+                return Err("exe du zip trop gros".into());
+            }
             let out = dir.join(&file);
             let mut o = std::fs::File::create(&out).map_err(|e| e.to_string())?;
-            std::io::copy(&mut e, &mut o).map_err(|e| e.to_string())?;
+            // Taille réelle bornée aussi (la taille annoncée peut mentir).
+            let n = std::io::copy(&mut (&mut e).take(MAX_EXE + 1), &mut o).map_err(|e| e.to_string())?;
+            drop(o);
+            if n > MAX_EXE {
+                return Err("exe du zip trop gros".into());
+            }
+            let mut head = [0u8; 2];
+            let ok_mz = std::fs::File::open(&out).and_then(|mut f| f.read_exact(&mut head)).is_ok() && &head == b"MZ";
+            if !ok_mz {
+                return Err("le fichier du zip n'est pas un exe Windows".into());
+            }
             return Ok(out);
         }
     }
@@ -214,11 +265,44 @@ mod tests {
         let u = Updater { repo: "Desarrh/explorateur", current: "0.2.0", asset_suffix: "windows-x64.zip", exe_name: None };
         let j = br#"{"tag_name":"v0.3.0","html_url":"https://x","body":"notes","assets":[
             {"name":"src.tar.gz","browser_download_url":"a"},
-            {"name":"Explorateur-v0.3.0-windows-x64.zip","browser_download_url":"b"}]}"#;
+            {"name":"Explorateur-v0.3.0-windows-x64.zip","browser_download_url":"https://github.com/Desarrh/explorateur/releases/download/v0.3.0/E.zip","digest":"sha256:A9B5CA862645937F1EDBEAFB375DBCAF53FD7DD0976ACDB072B8A16446FE8F33"}]}"#;
         let r = u.parse(j).unwrap().unwrap();
-        assert_eq!((r.version.as_str(), r.url.as_str(), r.page.as_str()), ("0.3.0", "b", "https://x"));
+        assert_eq!((r.version.as_str(), r.page.as_str()), ("0.3.0", "https://x"));
+        assert_eq!(r.url, "https://github.com/Desarrh/explorateur/releases/download/v0.3.0/E.zip");
+        assert_eq!(r.sha256, "a9b5ca862645937f1edbeafb375dbcaf53fd7dd0976acdb072b8a16446fe8f33");
+        // adresse hors de GitHub : refusée
+        let hors = br#"{"tag_name":"v0.3.0","assets":[{"name":"a-windows-x64.zip","browser_download_url":"http://exemple.test/a.zip","digest":"sha256:a9b5ca862645937f1edbeafb375dbcaf53fd7dd0976acdb072b8a16446fe8f33"}]}"#;
+        assert!(u.parse(hors).is_err());
+        // pas d'empreinte : refusée
+        let sans = br#"{"tag_name":"v0.3.0","assets":[{"name":"a-windows-x64.zip","browser_download_url":"https://github.com/a/b/a.zip"}]}"#;
+        assert!(u.parse(sans).unwrap_err().contains("SHA-256"));
         assert_eq!(u.parse(br#"{"tag_name":"v0.1.0","assets":[]}"#).unwrap(), None);
         assert!(u.parse(br#"{"message":"Not Found"}"#).is_err());
+    }
+
+    #[test]
+    fn empreinte_et_extraction() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("socle-maj-zip-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // SHA-256 de « abc » (vecteur de test FIPS 180-2)
+        let f = dir.join("abc.txt");
+        std::fs::write(&f, "abc").unwrap();
+        assert_eq!(sha256_file(&f).unwrap(), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        // zip avec un « exe » qui n'en est pas un : refusé ; avec un en-tête MZ : accepté
+        let make = |name: &str, body: &[u8]| {
+            let p = dir.join(name);
+            let mut z = zip::ZipWriter::new(std::fs::File::create(&p).unwrap());
+            z.start_file("app.exe", zip::write::SimpleFileOptions::default()).unwrap();
+            z.write_all(body).unwrap();
+            z.finish().unwrap();
+            p
+        };
+        let faux = make("faux.zip", b"#!/bin/sh");
+        assert!(extract_exe(&faux, &dir, Some("app.exe")).unwrap_err().contains("pas un exe"));
+        let vrai = make("vrai.zip", b"MZ\x90\0reste");
+        assert!(extract_exe(&vrai, &dir, Some("app.exe")).is_ok());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

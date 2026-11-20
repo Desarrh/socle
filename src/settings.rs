@@ -48,14 +48,18 @@ pub fn save_to<T: Serialize>(p: &Path, value: &T) -> Result<(), String> {
 
 /// Enregistrement différé : appelez `touch()` à chaque changement et `tick()` à chaque image ;
 /// l'écriture a lieu au plus une fois par `delay`, sur un thread (l'interface ne bloque jamais).
+///
+/// À la fermeture de l'app, appeler `flush` : il écrit ce qui reste et attend l'écriture en
+/// cours (sinon le thread pourrait être tué avant la fin et la dernière modification perdue).
 pub struct Saver {
     delay: std::time::Duration,
     dirty: Option<std::time::Instant>,
+    writing: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Saver {
     pub fn new(delay: std::time::Duration) -> Self {
-        Saver { delay, dirty: None }
+        Saver { delay, dirty: None, writing: None }
     }
     pub fn touch(&mut self) {
         self.dirty.get_or_insert_with(std::time::Instant::now);
@@ -71,11 +75,26 @@ impl Saver {
         self.dirty = None;
         if let Ok(json) = serde_json::to_vec_pretty(value) {
             let p = path(app);
-            std::thread::spawn(move || {
+            // une écriture à la fois, dans l'ordre : on attend la précédente (déjà finie en pratique)
+            if let Some(h) = self.writing.take() {
+                let _ = h.join();
+            }
+            self.writing = Some(std::thread::spawn(move || {
                 let _ = crate::paths::write_atomic(&p, &json);
-            });
+            }));
         }
         None
+    }
+
+    /// Écrit tout de suite ce qui reste à écrire et attend l'écriture en cours (fermeture).
+    pub fn flush<T: Serialize>(&mut self, app: &str, value: &T) -> Result<(), String> {
+        if let Some(h) = self.writing.take() {
+            let _ = h.join();
+        }
+        if self.dirty.take().is_some() {
+            save(app, value)?;
+        }
+        Ok(())
     }
 }
 
@@ -96,7 +115,13 @@ mod tests {
         let p = dir.join("settings.json");
         save_to(&p, &S { dark: true, n: 3 }).unwrap();
         assert_eq!(load_from::<S>(&p), S { dark: true, n: 3 });
-        assert!(!p.with_extension("json.tmp").exists());
+        assert!(std::fs::read_dir(&dir).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().ends_with(".tmp")), "aucun .tmp laissé");
+        // écritures simultanées : jamais de fichier partiel ni d'erreur de renommage
+        let hs: Vec<_> = (0..8).map(|i| { let p = p.clone(); std::thread::spawn(move || save_to(&p, &S { dark: false, n: i })) }).collect();
+        for h in hs {
+            h.join().unwrap().unwrap();
+        }
+        assert!(load_from::<S>(&p).n < 8);
         // champ inconnu / manquant : tolérés
         std::fs::write(&p, r#"{"dark":true,"ancien":1}"#).unwrap();
         assert_eq!(load_from::<S>(&p), S { dark: true, n: 0 });
