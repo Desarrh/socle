@@ -118,6 +118,14 @@ fn pool_et_annulation() {
     let d = pool.recv_timeout(Duration::from_secs(5)).expect("résultat");
     assert_eq!(d.id, id);
     assert_eq!(d.result.unwrap().width(), 64);
+    // demandes identiques : une seule en file, même id
+    let mut lent = Pool::new(1, None, || {});
+    let a = lent.request(dir().join("inexistant-1.png"), 0);
+    let b = lent.request(&p, 0);
+    let c = lent.request(&p, 0);
+    assert_eq!(b, c, "demande dédoublonnée");
+    assert_ne!(a, b);
+    assert!(lent.pending() <= 2);
     // demandes annulées : rien n'est livré
     let mut pool = Pool::new(1, None, || {});
     for _ in 0..50 {

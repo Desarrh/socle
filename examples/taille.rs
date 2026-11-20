@@ -108,6 +108,14 @@ fn main() {
     if let socle::instance::Start::Primary(i) = socle::instance::start("Taille", &args) {
         i.listen(|a| println!("{a:?}"));
     }
+    #[cfg(all(feature = "testmode", windows))]
+    if args.len() > 6 {
+        socle::testmode::low_priority();
+        socle::testmode::hide(args.len() as isize);
+        println!("{:?} {}", socle::testmode::capture(args.len() as isize).map(|c| c.0), socle::testmode::foreground());
+        let mut raw = egui::RawInput::default();
+        socle::testmode::prepare_input(&mut raw);
+    }
     #[cfg(feature = "update")]
     {
         let u = socle::update::Updater { repo: "a/b", current: "0.1.0", asset_suffix: ".zip", exe_name: None };

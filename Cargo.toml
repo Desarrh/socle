@@ -1,6 +1,6 @@
 [package]
 name = "socle"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 description = "Socle commun des applis egui de Desarrh : thème, icônes, composants, recherche floue, palette Ctrl+K, images, utilitaires"
 license = "MIT"
@@ -18,9 +18,9 @@ ui = ["theme", "icons", "keys", "fuzzy"]                    # composants + palet
 fuzzy = ["dep:memchr"]                               # recherche floue + autocomplétion (historique)
 # --- images ---
 images = ["dep:image", "dep:qoi", "dep:memchr"]                    # PNG, JPEG, GIF, WebP, BMP, ICO, TIFF, TGA, DDS (BC1-3), HDR, QOI, PSD, aperçu RAW + miniatures + cache
-img-exr = ["images", "image/exr"]                    # OpenEXR (crate exr, ~0,5 Mo)
-img-svg = ["images", "dep:resvg"]                    # SVG (resvg, ~1,5 Mo)
-img-jxl = ["images", "dep:jxl-oxide"]                # JPEG XL en Rust pur (~1 Mo)
+img-exr = ["images", "image/exr"]                    # OpenEXR (crate exr, +700 Ko mesurés)
+img-svg = ["images", "dep:resvg"]                    # SVG (resvg, +1 115 Ko mesurés)
+img-jxl = ["images", "dep:jxl-oxide"]                # JPEG XL en Rust pur (+2 256 Ko mesurés)
 img-wic = ["images", "dep:windows"]                  # Windows (WIC) : HEIC, AVIF, JXR, DDS BC7, RAW complet, JPEG réduit au décodage
 # --- utilitaires ---
 settings = ["dep:serde", "dep:serde_json"]           # %APPDATA%\<App>\settings.json, écriture atomique

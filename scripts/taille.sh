@@ -31,5 +31,6 @@ settings|settings
 crash|crash
 instance|instance
 update|update
+testmode|testmode
 full (tout)|full
 LISTE

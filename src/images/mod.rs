@@ -417,6 +417,9 @@ struct Job {
 
 struct Shared {
     queue: Mutex<(Vec<Job>, bool)>, // (file, arrêt)
+    /// Un seul décodage d'image **complète** à la fois : jusqu'à 1 Go de RGBA par image
+    /// (`MAX_PIXELS`), on ne veut pas N Go avec N threads. Les miniatures restent parallèles.
+    full_gate: Mutex<()>,
     cv: Condvar,
     cancel: Mutex<Cancel>,
 }
@@ -433,7 +436,7 @@ impl Pool {
     /// `workers` threads (2–4 conseillé), cache disque optionnel, `wake` appelé à chaque
     /// résultat (typiquement `move || ctx.request_repaint()`).
     pub fn new(workers: usize, cache: Option<DiskCache>, wake: impl Fn() + Send + Sync + 'static) -> Pool {
-        let shared = Arc::new(Shared { queue: Mutex::new((Vec::new(), false)), cv: Condvar::new(), cancel: Mutex::new(Cancel::new()) });
+        let shared = Arc::new(Shared { queue: Mutex::new((Vec::new(), false)), full_gate: Mutex::new(()), cv: Condvar::new(), cancel: Mutex::new(Cancel::new()) });
         let (tx, rx) = std::sync::mpsc::channel();
         let wake = Arc::new(wake);
         for i in 0..workers.max(1) {
@@ -459,15 +462,16 @@ impl Pool {
                     };
                     // Un décodeur qui panique (fichier piégé, bug d'une crate) ne doit tuer ni le
                     // thread ni l'app : on le transforme en erreur.
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let result = crate::catch(|| {
                         if job.max == 0 {
+                            let _seul = sh.full_gate.lock().unwrap_or_else(|e| e.into_inner());
                             decode(&job.path, &cancel)
                         } else if let Some(c) = &cache {
                             thumbnail_cached(c, &job.path, job.max, &cancel)
                         } else {
                             thumbnail(&job.path, job.max, &cancel)
                         }
-                    }))
+                    })
                     .unwrap_or_else(|_| Err("le décodeur a planté sur ce fichier".into()));
                     if cancel.is_cancelled() {
                         continue;
@@ -483,11 +487,21 @@ impl Pool {
     }
 
     /// Demande une miniature (`max` > 0) ou l'image complète (`max` = 0). Renvoie l'id.
+    /// Une demande identique (même chemin, même taille) déjà en attente n'est pas dupliquée :
+    /// elle repasse en tête de file et garde son id. Une app qui redemande à chaque image ne
+    /// remplit donc pas la file.
     pub fn request(&mut self, path: impl Into<PathBuf>, max: u32) -> u64 {
+        let path = path.into();
+        let mut q = self.shared.queue.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(i) = q.0.iter().position(|j| j.max == max && j.path == path) {
+            let job = q.0.remove(i);
+            let id = job.id;
+            q.0.push(job);
+            return id;
+        }
         let id = self.next;
         self.next += 1;
-        let mut q = self.shared.queue.lock().unwrap_or_else(|e| e.into_inner());
-        q.0.push(Job { id, path: path.into(), max });
+        q.0.push(Job { id, path, max });
         drop(q);
         self.shared.cv.notify_one();
         id

@@ -118,8 +118,14 @@ fn forward(pipe: &str, args: &[String], timeout: Duration) -> bool {
     while t0.elapsed() < timeout {
         match std::fs::OpenOptions::new().write(true).security_qos_flags(SQOS_IDENTIFICATION).open(pipe) {
             Ok(mut f) => {
-                // autorise l'instance principale à passer au premier plan
-                unsafe { windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(u32::MAX) };
+                // autorise l'instance principale (et elle seule) à passer au premier plan
+                use std::os::windows::io::AsRawHandle;
+                let mut pid = 0u32;
+                unsafe {
+                    if windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId(f.as_raw_handle() as HANDLE, &mut pid) != 0 && pid != 0 {
+                        windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(pid);
+                    }
+                }
                 return f.write_all(msg.as_bytes()).is_ok();
             }
             Err(e) if e.raw_os_error() == Some(231) => unsafe {
@@ -187,13 +193,27 @@ impl Instance {
     /// `on_msg` reçoit les arguments de chaque instance suivante (vide = « au premier plan »).
     pub fn listen(self, on_msg: impl Fn(Vec<String>) + Send + 'static) {
         let pipe = self.pipe.clone();
-        std::mem::forget(self); // le mutex vit jusqu'à la fin du processus
+        // Le mutex appartient au thread d'écoute : il vit tant que l'écoute tourne. Si elle
+        // s'arrête, il est relâché, et le lancement suivant devient l'instance principale au lieu
+        // d'attendre 3 s une réponse qui ne viendra pas.
+        let mutex = self.mutex as isize;
+        std::mem::forget(self);
         let _ = std::thread::Builder::new().name("socle-instance".into()).spawn(move || {
+            struct Release(isize);
+            impl Drop for Release {
+                fn drop(&mut self) {
+                    if self.0 != 0 {
+                        unsafe { CloseHandle(self.0 as HANDLE) };
+                    }
+                }
+            }
+            let _mutex = Release(mutex);
             let w = wide(&pipe);
             let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
             if event.is_null() {
                 return;
             }
+            let mut fails = 0u32;
             loop {
                 // FILE_FLAG_FIRST_PIPE_INSTANCE : si un autre processus a déjà pris ce nom (tube
                 // squatté), la création échoue et on n'écoute pas, plutôt que de partager le tube.
@@ -210,8 +230,16 @@ impl Instance {
                     )
                 };
                 if h == INVALID_HANDLE_VALUE {
-                    return;
+                    // Le nom est libre entre deux clients : un échec passager est réessayé
+                    // (1 s au total) avant d'abandonner l'écoute.
+                    fails += 1;
+                    if fails > 20 {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                    continue;
                 }
+                fails = 0;
                 // Attente d'un client : sans délai (le thread dort), en asynchrone pour pouvoir
                 // borner la lecture ensuite.
                 let mut ov: OVERLAPPED = unsafe { std::mem::zeroed() };

@@ -2,7 +2,7 @@
 
 Guide court pour la session de chaque app. **Le socle ne modifie aucune app** : chacune migre à son rythme, et peut le faire par morceaux (thème d'abord, le reste ensuite).
 
-## 0. Comment dépendre du socle (proposition, à valider)
+## 0. Comment dépendre du socle (adopté)
 
 `explorateur` et `lecteur-universel` sont publics, avec une CI GitHub : une dépendance `path = "../socle"` ferait échouer leur build CI, car le dossier n'existe pas sur le runner.
 
@@ -10,7 +10,7 @@ Guide court pour la session de chaque app. **Le socle ne modifie aucune app** : 
 
 ```toml
 # Cargo.toml de l'app
-socle = { git = "https://github.com/Desarrh/socle", tag = "v0.1.4", default-features = false, features = ["ui", "settings", "crash", "instance"] }
+socle = { git = "https://github.com/Desarrh/socle", tag = "v0.1.5", default-features = false, features = ["ui", "settings", "crash", "instance"] }
 ```
 
 Pour développer le socle et une app en même temps, sans toucher au `Cargo.toml` ni à la CI, chaque app ajoute un fichier **non versionné** `.cargo/config.toml` (à mettre dans `.gitignore`) :
@@ -28,7 +28,7 @@ Alternatives écartées :
 - **crates.io** : publication publique et versions immuables, c'est lourd pour une crate interne.
 - **Dépôt privé** : la CI des dépôts publics n'y aurait pas accès sans jeton.
 
-Fait le 20/11 : dépôt public https://github.com/Desarrh/socle (MIT), tags `v0.1.0`, `v0.1.1` (mode test), `v0.1.2` (mode test corrigé : invisible à l'écran au lieu de hors écran), `v0.1.3` (polices facultatives, `Palette::open_with`), `v0.1.4` (corrections du lecteur et de l'audit, voir « Changements de la v0.1.4 »). Chaque nouvelle version = un nouveau tag ; une app ne change de version qu'en modifiant son `tag = "…"`.
+Fait le 20/11 : dépôt public https://github.com/Desarrh/socle (MIT), tags `v0.1.0`, `v0.1.1` (mode test), `v0.1.2` (mode test corrigé : invisible à l'écran au lieu de hors écran), `v0.1.3` (polices facultatives, `Palette::open_with`), `v0.1.4` (corrections du lecteur et de l'audit, voir « Changements de la v0.1.4 »), `v0.1.5` (revue de la documentation et petits correctifs, voir « Changements de la v0.1.5 »). Chaque nouvelle version = un nouveau tag ; une app ne change de version qu'en modifiant son `tag = "…"`.
 
 ## Polices (toutes les apps, v0.1.3)
 
@@ -41,7 +41,7 @@ Conseil : explorateur et Vigie en défaut, lecteur avec `bold` (titres Word), Tu
 
 ## 1. Explorateur
 
-Features : `["ui", "images", "img-svg", "img-wic", "settings", "crash", "instance", "update"]` (+ `img-exr` / `img-jxl` si voulu).
+Features : `["ui", "images", "img-svg", "img-wic", "settings", "crash", "instance", "update", "testmode"]` (+ `img-exr` / `img-jxl` si voulu).
 
 | Avant | Après |
 |---|---|
@@ -61,11 +61,11 @@ Features : `["ui", "images", "img-svg", "img-wic", "settings", "crash", "instanc
 | `install_crash_log` | `socle::crash::install("Explorateur", env!("CARGO_PKG_VERSION"))` puis, au lancement, `socle::crash::pending("Explorateur")` → toast |
 | `Settings::save` (atomique) | `socle::settings::save("Explorateur", &s)` ; garder `#[serde(default)]` |
 
-Attention : `windows` 0.58 (explorateur) et 0.62 (`img-wic`) coexisteraient. Passer l'explorateur en 0.62 (comme le lecteur et Tube) évite d'embarquer les deux.
+`windows` : l'explorateur est passé en 0.62, comme le lecteur, Tube et `img-wic` : une seule version est embarquée.
 
 ## 2. Lecteur universel
 
-Features : `["ui", "images", "img-exr", "img-svg", "img-jxl", "img-wic", "settings", "crash", "instance", "update"]`.
+Features : `["ui", "images", "img-exr", "img-svg", "img-jxl", "img-wic", "settings", "crash", "instance", "update", "testmode"]`.
 
 | Avant | Après |
 |---|---|
@@ -81,7 +81,7 @@ Features : `["ui", "images", "img-exr", "img-svg", "img-jxl", "img-wic", "settin
 
 ## 3. Vigie
 
-Features : `["ui", "settings", "crash", "instance"]`.
+Features : `["ui", "settings", "crash", "instance", "testmode"]`.
 
 | Avant | Après |
 |---|---|
@@ -94,7 +94,7 @@ Features : `["ui", "settings", "crash", "instance"]`.
 
 ## 4. Tube
 
-Features : `["ui", "settings", "crash", "instance"]` (+ `images` si les miniatures passent par le cache disque du socle).
+Features : `["ui", "settings", "crash", "instance", "testmode"]` (+ `images` si les miniatures passent par le cache disque du socle).
 
 | Avant | Après |
 |---|---|
@@ -150,6 +150,22 @@ Un processus lancé depuis une app empaquetée MSIX (par exemple un outil de dé
 | `search_field` / `autocomplete_field` : le curseur ne recule plus dans le cadre | non | retirer les `ui.add_space(26.0)` de compensation (lecteur) |
 | `testmode::prepare_input(&mut raw)` | non | l'appeler après `take_egui_input` dans les apps qui font des tests scriptés |
 | Images : fichiers de plus de 1 Go et images de plus de 268 Mpx refusés ; une panique de décodeur dans le `Pool` devient une erreur ; DDS non compressés et TGA non compressés lus | non | rien |
+
+## 8. Changements de la v0.1.5
+
+Aucun changement cassant.
+
+| Changement | À faire |
+|---|---|
+| `images::Pool` : demandes identiques dédoublonnées, un seul décodage d'image complète à la fois | rien |
+| `DiskCache` ne se vide pas tout seul | appeler `DiskCache::prune(500 << 20)` (500 Mo, par exemple) sur un thread au démarrage |
+| `settings::Saver::take_error()` : erreur de la dernière écriture en arrière-plan ; `flush` la renvoie aussi | l'appeler à chaque image et afficher l'erreur en toast rouge |
+| `write_atomic` fait un `sync_all` avant le renommage | rien (quelques ms de plus par écriture, sur un thread) |
+| `crash` : une panique rattrapée par le `Pool` est journalisée sans être signalée au lancement suivant | rien |
+| `socle::VERSION` | l'afficher dans « À propos » ou l'aide F1, pour repérer une app restée en arrière |
+| instance : le passage au premier plan n'est plus autorisé qu'à l'instance principale | rien |
+| instance : si l'écoute s'arrête (tube nommé impossible à recréer), le mutex est relâché | rien : le lancement suivant ouvre une fenêtre au lieu d'attendre 3 s |
+| `catch_unwind` du `Pool` ne protège qu'en `panic = "unwind"` (défaut de Rust) | une app en `panic = "abort"` (Vigie) ne doit pas activer `images` sans repasser en `unwind` |
 
 ## Ce qui ne change pas
 

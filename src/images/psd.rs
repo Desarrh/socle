@@ -91,7 +91,8 @@ pub fn decode(bytes: &[u8], max: u32) -> Result<RgbaImage, String> {
 
     let step = if max == 0 { 1 } else { (w.max(h) / max as usize).max(1) };
     let (ow, oh) = (w.div_ceil(step), h.div_ceil(step));
-    // Mémoire bornée avant toute allocation : ~256 Mpx de plans (et autant pour la sortie RGBA).
+    // Mémoire bornée avant toute allocation : plans (1 octet par canal) + sortie RGBA (4 octets)
+    // ≤ 1 Gio, soit ~150 Mpx en RVB et ~128 Mpx en CMJN.
     if (ow as u64) * (oh as u64) * (need as u64 + 4) > 256 * 1024 * 1024 * 4 {
         return Err(format!("PSD trop grand ({w} × {h})"));
     }

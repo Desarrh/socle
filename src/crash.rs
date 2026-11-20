@@ -21,9 +21,18 @@ pub fn install(app: &'static str, version: &'static str) {
         let _ = std::fs::create_dir_all(&dir);
         let bt = std::backtrace::Backtrace::force_capture();
         let thread = std::thread::current().name().unwrap_or("?").to_string();
-        let entry = format!("==== {} · v{version} · thread {thread}\n{info}\n{bt}\n", stamp());
+        // Les décodeurs d'images du socle rattrapent leurs paniques (`catch_unwind`) : l'app ne
+        // plante pas. On garde la trace dans le journal, sans la signaler comme un plantage.
+        // Seulement à l'intérieur du `catch_unwind` (pas dans le rappel de l'app ni ailleurs dans
+        // le thread), et jamais avec `panic = "abort"`.
+        let caught = crate::panic_is_caught();
+        let note = if caught { " · rattrapée, l'app a continué" } else { "" };
+        let entry = format!("==== {} · v{version} · thread {thread}{note}\n{info}\n{bt}\n", stamp());
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("crash.log")) {
             let _ = f.write_all(entry.as_bytes());
+        }
+        if caught {
+            return;
         }
         let _ = std::fs::write(flag(&dir), info.to_string());
         default(info);
@@ -64,6 +73,14 @@ fn stamp() -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn panique_rattrapee_pas_signalee() {
+        assert!(!crate::panic_is_caught(), "hors catch_unwind : signalée");
+        let r = crate::catch(|| crate::panic_is_caught());
+        assert_eq!(r.ok(), Some(cfg!(panic = "unwind")), "dans catch_unwind : rattrapée");
+        assert!(!crate::panic_is_caught(), "marque retirée après");
+    }
+
     #[test]
     fn date() {
         let s = super::stamp();

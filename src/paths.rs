@@ -33,7 +33,14 @@ pub fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> 
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(format!(".{}.{n}.tmp", std::process::id()));
     let tmp = PathBuf::from(tmp);
-    std::fs::write(&tmp, bytes).map_err(|e| format!("écriture de {} : {e}", tmp.display()))?;
+    {
+        use std::io::Write;
+        let ecrire = |e: std::io::Error| format!("écriture de {} : {e}", tmp.display());
+        let mut f = std::fs::File::create(&tmp).map_err(ecrire)?;
+        f.write_all(bytes).map_err(ecrire)?;
+        // données sur le disque avant le renommage : tient aussi face à une coupure de courant
+        f.sync_all().map_err(ecrire)?;
+    }
     std::fs::rename(&tmp, path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         format!("remplacement de {} : {e}", path.display())
