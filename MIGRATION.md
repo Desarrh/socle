@@ -10,7 +10,7 @@ Guide court pour la session de chaque app. **Le socle ne modifie aucune app** : 
 
 ```toml
 # Cargo.toml de l'app
-socle = { git = "https://github.com/Desarrh/socle", tag = "v0.1.0", default-features = false, features = ["ui", "settings", "crash", "instance"] }
+socle = { git = "https://github.com/Desarrh/socle", tag = "v0.1.1", default-features = false, features = ["ui", "settings", "crash", "instance"] }
 ```
 
 Pour développer le socle et une app en même temps, sans toucher au `Cargo.toml` ni à la CI, chaque app ajoute un fichier **non versionné** `.cargo/config.toml` (à mettre dans `.gitignore`) :
@@ -28,7 +28,7 @@ Alternatives écartées :
 - **crates.io** : publication publique et versions immuables, c'est lourd pour une crate interne.
 - **Dépôt privé** : la CI des dépôts publics n'y aurait pas accès sans jeton.
 
-À faire par l'utilisateur ou avec son accord : créer `Desarrh/socle` (licence MIT, comme les apps), `git init` dans `C:\Dev\socle`, premier commit (auteur `Desarrh`), tag `v0.1.0`, push. **Rien n'a été créé ni poussé.**
+Fait le 20/11 : dépôt public https://github.com/Desarrh/socle (MIT), tags `v0.1.0` puis `v0.1.1` (mode test). Chaque nouvelle version = un nouveau tag ; une app ne change de version qu'en modifiant son `tag = "…"`.
 
 ## 1. Explorateur
 
@@ -96,6 +96,23 @@ Features : `["ui", "settings", "crash", "instance"]` (+ `images` si les miniatur
 | correctif AZERTY de `handle_keys` (touche physique des chiffres) | `socle::keys::pressed(ctx)` fait la même chose (même règle, reprise de Tube) |
 | `smtc.rs` (panneau média Windows) | reste dans Tube pour l'instant ; candidat pour une feature `smtc` du socle quand le lecteur fera T7 |
 | Y4 recherche locale dans l'historique | `socle::fuzzy::Index` sur les titres, ou `ui::autocomplete_field` |
+
+## 5. Mode test (règle n° 0, toutes les apps)
+
+Pendant les tests, l'utilisateur doit pouvoir se servir de son PC comme si de rien n'était. Feature `testmode` (`socle::testmode`) :
+
+| Besoin | Outil |
+|---|---|
+| savoir si on est en test | `testmode::enabled()` : `--test-hors-ecran` ou `SOCLE_TEST=1` |
+| fenêtre qui ne dérange pas | créer la fenêtre avec `with_active(false)` et `with_position(PhysicalPosition::new(-32000, -32000))`, puis `testmode::hide(hwnd)` juste après la création : hors écran, `WS_EX_NOACTIVATE`, hors de la barre des tâches. Le focus de l'utilisateur ne bouge pas (vérifié en test) |
+| capture d'écran de l'app | `testmode::capture(hwnd)` → `(largeur, hauteur, RGBA)` par `PrintWindow`, sans toucher à l'écran. La fenêtre doit être affichée (hors écran suffit) |
+| capture de l'interface seule | préférer le rendu **sans fenêtre** : egui + rendu CPU dans un tampon, puis PNG. Voir `capture()` dans `examples/demo.rs` (`--capture <dossier>`) |
+| ne pas ralentir le PC | `testmode::low_priority()` au début d'un test ; lancer les compilations en priorité basse (`start /low cargo …` ou `Start-Process -Priority BelowNormal`) |
+| instance unique pendant un test | utiliser un nom d'app de test (`socle::instance::start("MonAppTest123", …)`) pour ne jamais écrire dans l'instance ouverte de l'utilisateur |
+
+Le socle ne fournit volontairement **aucune entrée simulée** (souris, clavier). Les événements se passent directement à egui (`RawInput.events`), comme dans la démo.
+
+En mode test, pas de son ni de notification, et aucun réglage de l'utilisateur modifié : pointer les réglages vers un dossier temporaire (`socle::settings::save_to`).
 
 ## Ce qui ne change pas
 

@@ -17,6 +17,7 @@
 //! | [`crash`] | `crash` | `crash.log` + signalement au lancement suivant |
 //! | [`instance`] | `instance` | instance unique (mutex + tube nommé) |
 //! | [`update`] | `update` | mise à jour depuis GitHub Releases |
+//! | [`testmode`] | `testmode` | mode test : fenêtre hors écran sans focus, capture PrintWindow, priorité basse |
 
 #[cfg(feature = "theme")]
 pub mod theme;
@@ -52,6 +53,9 @@ pub mod instance;
 
 #[cfg(feature = "update")]
 pub mod update;
+
+#[cfg(all(feature = "testmode", windows))]
+pub mod testmode;
 
 /// Jeton d'annulation partagé entre l'interface et un thread de travail.
 /// Cloner = même jeton. `cancel()` est vu par tous les clones.
