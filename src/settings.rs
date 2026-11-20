@@ -47,24 +47,50 @@ pub fn save_to<T: Serialize>(p: &Path, value: &T) -> Result<(), String> {
 }
 
 /// Enregistrement différé : appelez `touch()` à chaque changement et `tick()` à chaque image ;
-/// l'écriture a lieu au plus une fois par `delay`, sur un thread (l'interface ne bloque jamais).
+/// l'écriture a lieu sur un thread (l'interface ne bloque jamais). Deux réglages :
+/// - [`Saver::new`]`(delay)` : au plus une écriture par `delay` après le premier changement ;
+/// - [`Saver::debounced`]`(quiet, max_wait)` : **au fil de l'eau**. On écrit dès que les
+///   changements s'arrêtent pendant `quiet` (ex. 300 ms), et au plus tard `max_wait` après le
+///   premier changement non écrit (ex. 2 s), même si l'utilisateur ne s'arrête pas.
 ///
 /// À la fermeture de l'app, appeler `flush` : il écrit ce qui reste et attend l'écriture en
 /// cours (sinon le thread pourrait être tué avant la fin et la dernière modification perdue).
 pub struct Saver {
-    delay: std::time::Duration,
-    dirty: Option<std::time::Instant>,
+    /// Silence après le dernier changement avant d'écrire.
+    quiet: std::time::Duration,
+    /// Attente maximale après le premier changement non écrit.
+    max_wait: std::time::Duration,
+    /// (premier changement non écrit, dernier changement)
+    dirty: Option<(std::time::Instant, std::time::Instant)>,
     writing: Option<std::thread::JoinHandle<Result<(), String>>>,
     /// Dernière erreur d'écriture, à montrer en toast (`take_error`).
     error: Option<String>,
 }
 
 impl Saver {
+    /// Écrit `delay` après le premier changement (comportement d'avant la v0.1.6).
     pub fn new(delay: std::time::Duration) -> Self {
-        Saver { delay, dirty: None, writing: None, error: None }
+        Self::debounced(delay, delay)
     }
+
+    /// Écrit au fil de l'eau : après `quiet` sans changement, ou au plus tard `max_wait` après
+    /// le premier changement non écrit.
+    pub fn debounced(quiet: std::time::Duration, max_wait: std::time::Duration) -> Self {
+        Saver { quiet, max_wait: max_wait.max(quiet), dirty: None, writing: None, error: None }
+    }
+
     pub fn touch(&mut self) {
-        self.dirty.get_or_insert_with(std::time::Instant::now);
+        let now = std::time::Instant::now();
+        let first = self.dirty.map_or(now, |d| d.0);
+        self.dirty = Some((first, now));
+    }
+
+    /// Temps restant avant l'écriture (`None` = rien à écrire, `Some(0)` = maintenant).
+    fn due_in(&self, now: std::time::Instant) -> Option<std::time::Duration> {
+        let (first, last) = self.dirty?;
+        let a = (last + self.quiet).saturating_duration_since(now);
+        let b = (first + self.max_wait).saturating_duration_since(now);
+        Some(a.min(b))
     }
     /// Si l'échéance est passée, sérialise maintenant et écrit sur un thread. Renvoie le temps
     /// restant avant la prochaine échéance (à passer à `request_repaint_after`).
@@ -72,10 +98,9 @@ impl Saver {
         if self.writing.as_ref().is_some_and(|h| h.is_finished()) {
             self.collect();
         }
-        let t = self.dirty?;
-        let el = t.elapsed();
-        if el < self.delay {
-            return Some(self.delay - el);
+        let left = self.due_in(std::time::Instant::now())?;
+        if !left.is_zero() {
+            return Some(left);
         }
         self.dirty = None;
         if let Ok(json) = serde_json::to_vec_pretty(value) {
@@ -128,6 +153,31 @@ mod tests {
     struct S {
         dark: bool,
         n: u32,
+    }
+
+    /// Au fil de l'eau : on attend la fin de la frappe (`quiet`), sans dépasser `max_wait`.
+    #[test]
+    fn ecriture_au_fil_de_l_eau() {
+        use std::time::{Duration as D, Instant};
+        let mut s = Saver::debounced(D::from_millis(300), D::from_secs(2));
+        let t0 = Instant::now();
+        assert_eq!(s.due_in(t0), None);
+        s.dirty = Some((t0, t0));
+        assert_eq!(s.due_in(t0), Some(D::from_millis(300)));
+        // frappe continue : chaque changement repousse, mais jamais au-delà de 2 s
+        s.dirty = Some((t0, t0 + D::from_millis(1900)));
+        assert_eq!(s.due_in(t0 + D::from_millis(1900)), Some(D::from_millis(100)));
+        assert_eq!(s.due_in(t0 + D::from_millis(2000)), Some(D::ZERO));
+        // comportement historique : `delay` après le premier changement
+        let mut h = Saver::new(D::from_secs(1));
+        h.dirty = Some((t0, t0 + D::from_millis(900)));
+        assert_eq!(h.due_in(t0 + D::from_millis(900)), Some(D::from_millis(100)));
+        // touch : le premier changement reste la référence de max_wait
+        let mut t = Saver::debounced(D::from_millis(300), D::from_secs(2));
+        t.touch();
+        let first = t.dirty.unwrap().0;
+        t.touch();
+        assert_eq!(t.dirty.unwrap().0, first);
     }
 
     #[test]

@@ -5,7 +5,7 @@ Bibliothèque Rust commune aux applis egui de Desarrh ([explorateur](https://git
 Compilée dans chaque exe : aucune dépendance à l'exécution. Chaque partie est une feature Cargo.
 
 ```toml
-socle = { git = "https://github.com/Desarrh/socle", tag = "v0.1.5", default-features = false, features = ["ui", "settings"] }
+socle = { git = "https://github.com/Desarrh/socle", tag = "v0.1.6", default-features = false, features = ["ui", "settings"] }
 ```
 
 - [STACK.md](STACK.md) : architecture, features, tailles, mesures

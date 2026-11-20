@@ -1,6 +1,6 @@
 [package]
 name = "socle"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2024"
 description = "Socle commun des applis egui de Desarrh : thème, icônes, composants, recherche floue, palette Ctrl+K, images, utilitaires"
 license = "MIT"

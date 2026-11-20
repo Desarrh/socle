@@ -1,6 +1,6 @@
 # Socle — stack technique (document de référence)
 
-Bibliothèque Rust commune aux applis egui de Desarrh : `explorateur`, `lecteur-universel`, `vigie` et `tube`. Version 0.1.5. Dépôt public : https://github.com/Desarrh/socle. Guide d'adoption par app : [MIGRATION.md](MIGRATION.md).
+Bibliothèque Rust commune aux applis egui de Desarrh : `explorateur`, `lecteur-universel`, `vigie` et `tube`. Version 0.1.6. Dépôt public : https://github.com/Desarrh/socle. Guide d'adoption par app : [MIGRATION.md](MIGRATION.md).
 
 **Vocabulaire du document**
 - **Tube** (majuscule) désigne l'app de lecture YouTube. Le canal Windows qui relie deux instances d'une même app est appelé **tube nommé** (*named pipe*).
@@ -148,10 +148,10 @@ Les polices intégrées d'egui (`default_fonts`) coûteraient ~630 Ko : le socle
 | `src/images/wic.rs` | WIC : décodage complet et réduit au décodage |
 | `src/images/tests.rs` | tests des formats, du cache et du pool (fichiers générés dans `%TEMP%`) |
 | `src/paths.rs` | `config_dir`, `cache_dir`, `write_atomic` (toujours compilé) |
-| `src/settings.rs` | `load`, `save`, `load_from`, `save_to`, `Saver` (`touch`, `tick`, `flush`, `take_error`) |
+| `src/settings.rs` | `load`, `save`, `load_from`, `save_to`, `Saver` (`new`, `debounced`, `touch`, `tick`, `flush`, `take_error`) |
 | `src/crash.rs` | `install`, `pending`, `log_path` |
 | `src/instance.rs` | `start` → `Start::{Primary, Forwarded, Alone}`, `Instance::listen` |
-| `src/update.rs` | `Updater` (`check`, `parse`, `install`), `Release`, `due`, `is_after_update`, `cleanup_old`, `relaunch` |
+| `src/update.rs` | `Updater` (`check`, `parse`, `install`), `Release`, `due`, `is_after_update`, `cleanup_old`, `relaunch`, essai et retour arrière : `startup` → `Startup::{Normal, Trial, RolledBack}`, `confirm_started`, `rollback_on_panic` |
 | `src/testmode.rs` | `enabled`, `hide`, `capture`, `foreground`, `prepare_input`, `force_focus`, `low_priority` |
 
 ### Outillage
@@ -173,7 +173,7 @@ Comme dans les apps, les composants **renvoient** ce qui s'est passé : l'id de 
 - **Recherche** : synchrone, sur le thread qui l'appelle. Au-delà de 40 000 entrées, elle se répartit sur les cœurs (au plus 8, `std::thread::scope`).
 - **`images::Pool`** : N threads et une file LIFO (ce qui est à l'écran passe d'abord). Les demandes identiques sont dédoublonnées, et un seul décodage d'image complète tourne à la fois. `cancel_pending` vide la file et annule les décodages en cours. Le rappel `wake` est fourni par l'app (typiquement `ctx.request_repaint()`) et appelé depuis le thread de décodage à chaque résultat.
 - **`instance`** : un thread attend le prochain client sur le tube nommé, sans consommer de CPU (attente asynchrone).
-- **`settings::Saver`** : écrit sur un thread ponctuel ; `flush` attend la fin de l'écriture.
+- **`settings::Saver`** : écrit sur un thread ponctuel ; `flush` attend la fin de l'écriture. En mode `debounced`, l'écriture a lieu après un silence (par exemple 300 ms), et au plus tard après un délai maximal (par exemple 2 s).
 
 ## 4. Direction artistique
 
@@ -191,7 +191,14 @@ Le socle porte la direction artistique commune aux 4 apps egui (document de dire
 - `unsafe` limité aux appels Win32 et COM : `instance.rs`, `testmode.rs`, `images/wic.rs`.
 - Dossiers : réglages et `crash.log` dans `%APPDATA%\<App>\`, caches dans `%LOCALAPPDATA%\<App>\` (miniatures : `miniatures\*.qoi`).
 - Instance unique : mutex `Local\<App>.Socle.Instance` + tube nommé `\\.\pipe\<App>-<utilisateur>-s<n° de session>-socle-v2`. Message : `SOCLE1\0arg1\0arg2…`.
-- Mise à jour : asset zip d'une release GitHub de l'app (suffixe configurable, par exemple `windows-x64.zip`), contenant l'exe. Drapeau de relance `--apres-maj` (l'ancien `--after-update` est reconnu). L'ancien exe (`.exe.old`, ou `.old`) est supprimé au démarrage suivant.
+- Mise à jour : asset zip d'une release GitHub de l'app (suffixe configurable, par exemple `windows-x64.zip`), contenant l'exe. Drapeau de relance `--apres-maj` (l'ancien `--after-update` est reconnu), et `--retour-maj` après un retour arrière.
+- Fichiers posés à côté de l'exe pendant une mise à jour :
+  - `<exe>.old` : l'ancienne version, gardée pendant l'essai ;
+  - `<exe>.essai` : témoin d'essai, avec la version et le nombre de démarrages ;
+  - `<exe>.echec` : version abandonnée ;
+  - `<exe>.refusee` : version à ne plus proposer.
+
+  Hors essai, `cleanup_old` supprime `.old` et `.echec`.
 - Raccourcis fournis : Ctrl+K (palette), F1 (aide), Tab (compléter), ↑↓ / Entrée / Échap.
 - **AZERTY** : egui-winit 0.37 transmet la touche logique (Ctrl+3 arrive comme `Key::Quote`). Il faut lire les raccourcis avec `socle::keys` : la rangée des chiffres passe par la touche physique.
 - Versions : un tag Git par version. Tant que le socle est en 0.x, un changement d'API peut arriver à chaque version : il est listé dans MIGRATION.md, et chaque app choisit quand suivre. `socle::VERSION` donne la version compilée dans l'exe.
@@ -204,7 +211,7 @@ Le socle porte la direction artistique commune aux 4 apps egui (document de dire
 
 ## 6. Fonctionnalités (ce qui marche aujourd'hui)
 
-Testé par `cargo test --release --features full` (41 tests) et `cargo bench --features full`.
+Testé par `cargo test --release --features full` (43 tests) et `cargo bench --features full`.
 
 Machine de mesure : Intel Core i9-9900K (8 cœurs, 16 threads), SSD NVMe, Windows 11. Les durées dépendent de la machine et de sa charge.
 
@@ -223,7 +230,12 @@ Machine de mesure : Intel Core i9-9900K (8 cœurs, 16 threads), SSD NVMe, Window
   - réglages : `.tmp` unique par écriture, `sync_all` avant le renommage, fichier abîmé gardé en `.bad`, enregistrement différé `Saver` avec `flush` à la fermeture et erreurs remontées (`take_error`) ;
   - `crash.log` et `pending()` au lancement suivant ; une panique survenue à l'intérieur du `catch_unwind` du `Pool` (le décodage lui-même) est journalisée sans être signalée comme plantage ; ailleurs, y compris dans le rappel `wake` de l'app, elle est signalée ;
   - instance unique : transmission en moins de 500 ms vérifiée en test ;
-  - mise à jour : lecture de la release, remplacement de l'exe avec retour arrière testé.
+  - mise à jour : lecture de la release, remplacement de l'exe avec retour arrière s'il échoue (testé) ;
+  - essai de la nouvelle version (testé) :
+    - l'ancienne est gardée jusqu'à `confirm_started` ;
+    - après 2 démarrages sans confirmation, ou une panique pendant l'essai, l'ancienne est remise et relancée ;
+    - la version abandonnée n'est plus proposée ;
+  - réglages au fil de l'eau (`Saver::debounced`).
 - **Sécurité** (audit de la v0.1.4) :
   - **mise à jour** :
     - `curl.exe` appelé par son chemin complet, HTTPS obligatoire même après une redirection, `--` avant l'adresse ;
@@ -276,6 +288,7 @@ Chaque limite est suivie de ce qui la contient aujourd'hui.
   - les instances suivantes sont servies une par une, et un client lent les retarde d'1 s au plus ;
   - si le tube nommé ne peut pas être recréé pendant 1 s, le thread d'écoute s'arrête et relâche le mutex : le lancement suivant devient l'instance principale (nouvelle fenêtre, sans attente).
 - **Mise à jour** :
+  - l'essai ne marche que si l'app appelle `startup`, `confirm_started` et `rollback_on_panic` (MIGRATION.md). Une version qui se fige sans planter n'est détectée qu'aux lancements suivants : il faut 2 démarrages sans confirmation. Un retour arrière vers une version d'avant la v0.1.6 laisse les fichiers `.echec` et `.refusee`, sans gêne ;
   - l'empreinte vient de la même API GitHub que le zip : elle garantit que le fichier est intact, pas qu'il vient bien de l'auteur. Un compte GitHub compromis pourrait publier un zip et son empreinte. → Signature ed25519 hors ligne à décider avec l'utilisateur ;
   - sans `exe_name`, le premier `.exe` du zip est pris.
 - **Recherche** :

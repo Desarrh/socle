@@ -10,7 +10,7 @@ Guide court pour la session de chaque app. **Le socle ne modifie aucune app** : 
 
 ```toml
 # Cargo.toml de l'app
-socle = { git = "https://github.com/Desarrh/socle", tag = "v0.1.5", default-features = false, features = ["ui", "settings", "crash", "instance"] }
+socle = { git = "https://github.com/Desarrh/socle", tag = "v0.1.6", default-features = false, features = ["ui", "settings", "crash", "instance"] }
 ```
 
 Pour développer le socle et une app en même temps, sans toucher au `Cargo.toml` ni à la CI, chaque app ajoute un fichier **non versionné** `.cargo/config.toml` (à mettre dans `.gitignore`) :
@@ -28,7 +28,7 @@ Alternatives écartées :
 - **crates.io** : publication publique et versions immuables, c'est lourd pour une crate interne.
 - **Dépôt privé** : la CI des dépôts publics n'y aurait pas accès sans jeton.
 
-Fait le 20/11 : dépôt public https://github.com/Desarrh/socle (MIT), tags `v0.1.0`, `v0.1.1` (mode test), `v0.1.2` (mode test corrigé : invisible à l'écran au lieu de hors écran), `v0.1.3` (polices facultatives, `Palette::open_with`), `v0.1.4` (corrections du lecteur et de l'audit, voir « Changements de la v0.1.4 »), `v0.1.5` (revue de la documentation et petits correctifs, voir « Changements de la v0.1.5 »). Chaque nouvelle version = un nouveau tag ; une app ne change de version qu'en modifiant son `tag = "…"`.
+Fait le 20/11 : dépôt public https://github.com/Desarrh/socle (MIT), tags `v0.1.0`, `v0.1.1` (mode test), `v0.1.2` (mode test corrigé : invisible à l'écran au lieu de hors écran), `v0.1.3` (polices facultatives, `Palette::open_with`), `v0.1.4` (corrections du lecteur et de l'audit, voir « Changements de la v0.1.4 »), `v0.1.5` (revue de la documentation et petits correctifs, voir « Changements de la v0.1.5 »), `v0.1.6` (essai et retour arrière des mises à jour, réglages au fil de l'eau). Chaque nouvelle version = un nouveau tag ; une app ne change de version qu'en modifiant son `tag = "…"`.
 
 ## Polices (toutes les apps, v0.1.3)
 
@@ -166,6 +166,41 @@ Aucun changement cassant.
 | instance : le passage au premier plan n'est plus autorisé qu'à l'instance principale | rien |
 | instance : si l'écoute s'arrête (tube nommé impossible à recréer), le mutex est relâché | rien : le lancement suivant ouvre une fenêtre au lieu d'attendre 3 s |
 | `catch_unwind` du `Pool` ne protège qu'en `panic = "unwind"` (défaut de Rust) | une app en `panic = "abort"` (Vigie) ne doit pas activer `images` sans repasser en `unwind` |
+
+## 9. Changements de la v0.1.6
+
+Aucun changement cassant : une app qui n'appelle pas les nouvelles fonctions garde le comportement d'avant.
+
+### Essai et retour arrière d'une mise à jour (apps avec `update`)
+
+```rust
+fn main() {
+    socle::crash::install("Lecteur", env!("CARGO_PKG_VERSION"));
+    socle::update::rollback_on_panic(); // après crash::install
+    if socle::update::startup() == socle::update::Startup::RolledBack {
+        return; // l'ancienne version est relancée : on s'arrête
+    }
+    socle::update::cleanup_old(); // ne supprime rien pendant l'essai
+    // … instance::start, fenêtre …
+}
+
+// après la première image affichée (une seule fois) :
+socle::update::confirm_started();
+```
+
+Ce qui se passe :
+- après l'installation, la nouvelle version est à l'essai : l'ancien exe (`.old`) reste à côté ;
+- si la nouvelle version plante pendant l'essai, ou si elle démarre 2 fois sans atteindre `confirm_started`, l'ancienne est remise en place et relancée avec `--retour-maj`, et la version ratée n'est plus proposée ;
+- `instance::start` reconnaît `--retour-maj` comme `--apres-maj` (il réessaie le mutex pendant 3 s).
+
+### Réglages au fil de l'eau
+
+```rust
+// au lieu de Saver::new(Duration::from_secs(2)) :
+let saver = socle::settings::Saver::debounced(Duration::from_millis(300), Duration::from_secs(2));
+```
+
+On écrit 300 ms après le dernier changement, et au plus tard 2 s après le premier changement non écrit. `touch`, `tick`, `flush` et `take_error` ne changent pas.
 
 ## Ce qui ne change pas
 

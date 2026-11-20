@@ -7,6 +7,15 @@
 //!   l'autorise), le nouveau prend sa place, relance avec `--apres-maj`. Le `.old` est supprimé
 //!   au démarrage suivant (`cleanup_old`).
 //!
+//! **Essai et retour arrière** (v0.1.6) : après l'installation, la nouvelle version est « à
+//! l'essai » (témoin `<exe>.essai`) et l'ancien exe `.old` est gardé. L'app appelle :
+//! - [`startup`] tout au début de `main` : compte les démarrages ; après [`MAX_TRIES`]
+//!   démarrages sans confirmation, remet l'ancienne version, la relance (`--retour-maj`) et
+//!   refuse cette version aux vérifications suivantes ;
+//! - [`confirm_started`] après la première image affichée : l'essai est réussi ;
+//! - [`rollback_on_panic`] après `crash::install` : une panique pendant l'essai remet
+//!   l'ancienne version tout de suite.
+//!
 //! Drapeau de relance unifié : `--apres-maj`. `is_after_update()` reconnaît aussi l'ancien
 //! `--after-update` de l'explorateur (une ancienne version installée relance la nouvelle avec).
 
@@ -16,6 +25,10 @@ use std::process::Command;
 
 const NO_WINDOW: u32 = 0x0800_0000;
 pub const RELAUNCH_FLAG: &str = "--apres-maj";
+/// Drapeau de l'ancienne version relancée après un retour arrière.
+pub const ROLLBACK_FLAG: &str = "--retour-maj";
+/// Démarrages sans confirmation tolérés avant le retour arrière.
+pub const MAX_TRIES: u32 = 2;
 
 /// Paramètres propres à chaque app.
 #[derive(Clone, Debug)]
@@ -77,9 +90,10 @@ pub fn due(last_check: u64) -> bool {
     now.saturating_sub(last_check) >= 24 * 3600
 }
 
-/// Relancé par une mise à jour ? (l'ancienne instance est en train de se fermer)
+/// Relancé par une mise à jour ou un retour arrière ? (l'instance précédente est en train de
+/// se fermer)
 pub fn is_after_update() -> bool {
-    std::env::args().any(|a| a == RELAUNCH_FLAG || a == "--after-update")
+    std::env::args().any(|a| a == RELAUNCH_FLAG || a == ROLLBACK_FLAG || a == "--after-update")
 }
 
 impl Updater {
@@ -94,7 +108,10 @@ impl Updater {
         if !out.status.success() {
             return Err("pas de connexion".into());
         }
-        self.parse(&out.stdout)
+        let r = self.parse(&out.stdout)?;
+        // Version déjà essayée et abandonnée (retour arrière) : on ne la repropose pas.
+        let refused = std::env::current_exe().ok().and_then(|e| std::fs::read_to_string(side(&e, "refusee")).ok());
+        Ok(r.filter(|r| refused.as_deref().map(str::trim) != Some(r.tag.as_str())))
     }
 
     /// Lit la réponse JSON de l'API (séparé pour les tests).
@@ -166,6 +183,8 @@ impl Updater {
         let new_exe = extract_exe(&zip_path, &tmp, self.exe_name)?;
         progress(0.9);
         replace_exe(&exe, &new_exe)?;
+        // La nouvelle version est à l'essai jusqu'à `confirm_started`.
+        let _ = std::fs::write(side(&exe, "essai"), format!("{}\n0\n", r.tag));
         let _ = std::fs::remove_dir_all(&tmp);
         progress(1.0);
         Ok(exe)
@@ -235,11 +254,117 @@ fn old_path(exe: &Path) -> PathBuf {
 
 /// Au démarrage : supprime l'exe remplacé lors d'une mise à jour précédente (les deux
 /// conventions : `app.exe.old` du lecteur et `app.old` de l'explorateur).
+///
+/// Pendant l'essai d'une nouvelle version (témoin `.essai`), le `.old` est gardé pour pouvoir
+/// revenir en arrière.
 pub fn cleanup_old() {
     if let Ok(exe) = std::env::current_exe() {
-        let _ = std::fs::remove_file(old_path(&exe));
-        let _ = std::fs::remove_file(exe.with_extension("old"));
+        cleanup_at(&exe);
     }
+}
+
+fn cleanup_at(exe: &Path) {
+    if side(exe, "essai").exists() {
+        return;
+    }
+    let _ = std::fs::remove_file(old_path(exe));
+    let _ = std::fs::remove_file(exe.with_extension("old"));
+    let _ = std::fs::remove_file(side(exe, "echec"));
+}
+
+/// `<exe>.<suffixe>` (témoin d'essai, version refusée, exe en échec).
+fn side(exe: &Path, suffix: &str) -> PathBuf {
+    let mut s = exe.as_os_str().to_owned();
+    s.push(".");
+    s.push(suffix);
+    PathBuf::from(s)
+}
+
+/// Résultat de [`startup`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Startup {
+    /// Pas de mise à jour en cours d'essai.
+    Normal,
+    /// Nouvelle version à l'essai : appeler `confirm_started` après la première image.
+    Trial,
+    /// La nouvelle version a échoué trop souvent : l'ancienne est remise et relancée. Quitter.
+    RolledBack,
+}
+
+/// Tout au début de `main`, avant `instance::start`. Voir la doc du module.
+pub fn startup() -> Startup {
+    match std::env::current_exe() {
+        Ok(exe) => startup_at(&exe, &spawn_rollback),
+        Err(_) => Startup::Normal,
+    }
+}
+
+fn spawn_rollback(exe: &Path) -> Result<(), String> {
+    Command::new(exe).arg(ROLLBACK_FLAG).spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
+fn startup_at(exe: &Path, spawn: &dyn Fn(&Path) -> Result<(), String>) -> Startup {
+    let trial = side(exe, "essai");
+    let Ok(text) = std::fs::read_to_string(&trial) else { return Startup::Normal };
+    let mut lines = text.lines();
+    let tag = lines.next().unwrap_or("").to_string();
+    let tries = lines.next().and_then(|n| n.trim().parse::<u32>().ok()).unwrap_or(0) + 1;
+    if tries > MAX_TRIES && rollback_at(exe, spawn).is_ok() {
+        return Startup::RolledBack;
+    }
+    let _ = std::fs::write(&trial, format!("{tag}\n{tries}\n"));
+    Startup::Trial
+}
+
+/// Après la première image affichée par la nouvelle version : l'essai est réussi, l'ancien exe
+/// est supprimé. Sans effet hors essai.
+pub fn confirm_started() {
+    if let Ok(exe) = std::env::current_exe() {
+        confirm_at(&exe);
+    }
+}
+
+fn confirm_at(exe: &Path) {
+    if std::fs::remove_file(side(exe, "essai")).is_ok() {
+        cleanup_at(exe);
+    }
+}
+
+/// Remet l'ancienne version : exe actuel → `.echec`, `.old` → exe, version refusée, relance.
+fn rollback_at(exe: &Path, spawn: &dyn Fn(&Path) -> Result<(), String>) -> Result<(), String> {
+    let old = [old_path(exe), exe.with_extension("old")].into_iter().find(|p| p.exists()).ok_or("ancienne version introuvable")?;
+    let trial = side(exe, "essai");
+    let tag = std::fs::read_to_string(&trial).ok().and_then(|t| t.lines().next().map(String::from)).unwrap_or_default();
+    let failed = side(exe, "echec");
+    let _ = std::fs::remove_file(&failed);
+    // l'exe en cours d'exécution peut être renommé, pas écrasé
+    std::fs::rename(exe, &failed).map_err(|e| format!("retour arrière impossible : {e}"))?;
+    if let Err(e) = std::fs::rename(&old, exe) {
+        let _ = std::fs::rename(&failed, exe);
+        return Err(format!("retour arrière impossible : {e}"));
+    }
+    if !tag.is_empty() {
+        let _ = std::fs::write(side(exe, "refusee"), &tag);
+    }
+    let _ = std::fs::remove_file(&trial);
+    spawn(exe)
+}
+
+/// À appeler après `crash::install` : pendant l'essai d'une nouvelle version, une panique
+/// (hors panique rattrapée par le socle) remet l'ancienne version, la relance et quitte.
+pub fn rollback_on_panic() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        previous(info);
+        if crate::panic_is_caught() {
+            return;
+        }
+        if let Ok(exe) = std::env::current_exe() {
+            if side(&exe, "essai").exists() && rollback_at(&exe, &spawn_rollback).is_ok() {
+                std::process::exit(1);
+            }
+        }
+    }));
 }
 
 /// Relance le nouvel exe avec `--apres-maj` (il attend ~0,8 s que l'ancien se ferme).
@@ -302,6 +427,45 @@ mod tests {
         assert!(extract_exe(&faux, &dir, Some("app.exe")).unwrap_err().contains("pas un exe"));
         let vrai = make("vrai.zip", b"MZ\x90\0reste");
         assert!(extract_exe(&vrai, &dir, Some("app.exe")).is_ok());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Essai d'une nouvelle version : 2 démarrages sans confirmation tolérés, puis retour à
+    /// l'ancienne, relancée, et version refusée. Avec confirmation : l'ancien exe disparaît.
+    #[test]
+    fn essai_puis_retour_arriere() {
+        let dir = std::env::temp_dir().join(format!("socle-essai-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("app.exe");
+        let new = dir.join("new.exe");
+        let lances = std::cell::RefCell::new(Vec::new());
+        let spawn = |p: &Path| {
+            lances.borrow_mut().push(p.to_path_buf());
+            Ok(())
+        };
+        // installation : ancien → .old, nouveau en place, témoin d'essai
+        std::fs::write(&exe, "ancien").unwrap();
+        std::fs::write(&new, "nouveau").unwrap();
+        replace_exe(&exe, &new).unwrap();
+        std::fs::write(side(&exe, "essai"), "v0.2.0\n0\n").unwrap();
+        assert_eq!(startup_at(&exe, &spawn), Startup::Trial);
+        cleanup_at(&exe);
+        assert!(old_path(&exe).exists(), "le .old est gardé pendant l'essai");
+        assert_eq!(startup_at(&exe, &spawn), Startup::Trial);
+        assert_eq!(startup_at(&exe, &spawn), Startup::RolledBack, "3e démarrage sans confirmation");
+        assert_eq!(std::fs::read_to_string(&exe).unwrap(), "ancien");
+        assert_eq!(std::fs::read_to_string(side(&exe, "refusee")).unwrap(), "v0.2.0");
+        assert!(!side(&exe, "essai").exists());
+        assert_eq!(*lances.borrow(), vec![exe.clone()], "ancienne version relancée");
+        // la version d'après : confirmée au 1er démarrage
+        std::fs::write(&new, "suivant").unwrap();
+        replace_exe(&exe, &new).unwrap();
+        std::fs::write(side(&exe, "essai"), "v0.3.0\n0\n").unwrap();
+        assert_eq!(startup_at(&exe, &spawn), Startup::Trial);
+        confirm_at(&exe);
+        assert!(!old_path(&exe).exists() && !side(&exe, "essai").exists());
+        assert_eq!(startup_at(&exe, &spawn), Startup::Normal);
         let _ = std::fs::remove_dir_all(dir);
     }
 

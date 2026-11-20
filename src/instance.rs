@@ -75,7 +75,7 @@ pub enum Start {
 
 /// Relancé par une mise à jour (`--apres-maj`, ou l'ancien `--after-update`) ?
 fn after_update() -> bool {
-    std::env::args().any(|a| a == "--apres-maj" || a == "--after-update")
+    std::env::args().any(|a| a == "--apres-maj" || a == "--retour-maj" || a == "--after-update")
 }
 
 /// Détermine le rôle de ce processus et transmet `args` si une instance tourne déjà.
